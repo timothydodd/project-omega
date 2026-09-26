@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Demo store</title>
+  <style>
+    body { font: 16px/1.5 system-ui, sans-serif; margin: 0; background: #fff; color: #1a1a1a; }
+    header { display: flex; gap: 20px; align-items: center; padding: 16px 24px; border-bottom: 1px solid #e5e5e5; }
+    header b { margin-right: auto; }
+    main { max-width: 640px; margin: 40px auto; padding: 0 16px; }
+    button { font: inherit; padding: 8px 14px; border-radius: 6px; border: 1px solid #bbb; background: #f6f6f6; cursor: pointer; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0; }
+    code { background: #f2f2f2; padding: 2px 5px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <header>
+    <b>Demo store</b>
+    <a href="/demo">Home</a>
+    <a href="/demo/pricing">Pricing</a>
+    <a href="/demo/blog">Blog</a>
+    <a href="/demo/signup">Sign up</a>
+  </header>
+  <main>
+    <h1 id="title">Home</h1>
+    <p>This page loads the Omega tracker so you can test it. Open it in a few tabs, click around, and watch the dashboard's Live view.</p>
+    <div class="row">
+      <button data-omega-event="Add to cart" data-omega-product="t-shirt">Add to cart (data attribute)</button>
+      <button onclick="omega.track('Newsletter signup', { placement: 'demo' })">Subscribe (omega.track)</button>
+      <button onclick="omega.identify('demo-user-1', { name: 'Demo User', email: 'demo@example.com' })">Sign in as Demo User (omega.identify)</button>
+      <button onclick="omega.consent(true)">Accept cookies (omega.consent)</button>
+      <button onclick="omega.consent(false)">Decline cookies</button>
+      <button onclick="history.pushState({}, '', '/demo/spa-' + Math.random().toString(36).slice(2, 6)); document.getElementById('title').textContent = location.pathname">Client-side route change</button>
+    </div>
+    <p>Links from here: <a href="/demo?utm_source=newsletter&utm_campaign=fall-sale">a campaign link</a>.</p>
+    <p id="status"></p>
+  </main>
+  <script>
+    // The demo takes the site key from ?site=... (and optional ?cookies=consent|always), or reuses the last ones.
+    var params = new URLSearchParams(location.search);
+    var key = params.get('site') || localStorage.getItem('omega_demo_site');
+    var cookies = params.has('site') ? params.get('cookies') : localStorage.getItem('omega_demo_cookies');
+    var title = { '/demo/pricing': 'Pricing', '/demo/blog': 'Blog', '/demo/signup': 'Sign up' }[location.pathname];
+    if (title) { document.title = title + ' | Demo store'; document.getElementById('title').textContent = title; }
+    if (key) {
+      localStorage.setItem('omega_demo_site', key);
+      if (cookies) localStorage.setItem('omega_demo_cookies', cookies); else localStorage.removeItem('omega_demo_cookies');
+      var s = document.createElement('script');
+      s.src = '/t.js';
+      s.setAttribute('data-site', key);
+      if (cookies) s.setAttribute('data-cookies', cookies);
+      document.head.appendChild(s);
+      document.getElementById('status').innerHTML = 'Tracking with site key <code>' + key.replace(/[<>&"]/g, '') + '</code>, cookies: <code>' +
+        (cookies || 'none').replace(/[<>&"]/g, '') + '</code>. Add &amp;cookies=consent or &amp;cookies=always to the URL to change.';
+    } else {
+      document.getElementById('status').textContent = 'Add ?site=YOUR_SITE_KEY to the URL to start tracking.';
+    }
+  </script>
+</body>
+</html>

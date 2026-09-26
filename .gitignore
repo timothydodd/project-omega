@@ -1,0 +1,7 @@
+data/*.db
+data/*.db-*
+/omega
+/omega.exe
+/dist/
+data/*.mmdb
+data/*.tmp

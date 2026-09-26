@@ -1,0 +1,8 @@
+.git
+.github
+deploy
+data
+dist
+*.exe
+/omega
+*.md

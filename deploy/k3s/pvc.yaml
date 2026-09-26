@@ -1,0 +1,11 @@
+# SQLite database. k3s's default "local-path" storage keeps it on the node's disk.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: omega-data
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 2Gi

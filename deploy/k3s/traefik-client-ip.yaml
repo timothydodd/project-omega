@@ -1,0 +1,16 @@
+# Apply once per cluster (NOT part of the kustomization):
+#   kubectl apply -f deploy/k3s/traefik-client-ip.yaml
+#
+# By default k3s's Traefik service uses externalTrafficPolicy: Cluster, which replaces the visitor's IP with a
+# node IP. Omega needs the real IP for cookieless visitor ids and country lookup, so keep it with "Local".
+# (Not needed if the site is behind Cloudflare: Omega reads CF-Connecting-IP instead.)
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    service:
+      spec:
+        externalTrafficPolicy: Local

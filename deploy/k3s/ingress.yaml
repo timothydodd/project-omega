@@ -1,0 +1,24 @@
+# k3s ships with Traefik. Change the host to your analytics subdomain.
+# For HTTPS with cert-manager, uncomment the annotation and the tls block.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: omega
+  # annotations:
+  #   cert-manager.io/cluster-issuer: letsencrypt
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: analytics.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: omega
+                port:
+                  name: http
+  # tls:
+  #   - hosts: [analytics.example.com]
+  #     secretName: omega-tls
