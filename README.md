@@ -192,7 +192,7 @@ Country comes from a CDN header when one is present (`CF-IPCountry`, `X-Vercel-I
 **Updates are automatic.** Twice a day the server checks whether DB-IP has published a new monthly release. If so, it downloads it into the data folder (the persistent volume on k3s) and swaps it in live, with no restart and no image rebuild needed. The two newest files are kept.
 - The container image also includes a copy, used on first start or when the server can't reach the internet.
 - With automatic updates off (`OMEGA_IP_DB_UPDATE=off`), run `omega geoip-update` instead.
-- **Settings → IP lookups** shows which database month is loaded.
+- **Settings → IP lookups** shows which database month is loaded. Its **Check for updates now** button fetches a new release immediately; that works even with automatic updates off.
 
 ## Not built yet
 

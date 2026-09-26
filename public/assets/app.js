@@ -852,11 +852,40 @@ async function settingsView(main, r, alive) {
         </dl>
         <p class="muted" style="margin:14px 0 0">${st.autoUpdate
           ? 'New monthly releases download automatically; no restart needed.'
-          : 'Automatic updates are off (OMEGA_IP_DB_UPDATE=off). Run "omega geoip-update" to update.'}
+          : 'Automatic updates are off (OMEGA_IP_DB_UPDATE=off). Use the button below to update.'}
           IP addresses are only used for the lookup and never stored.
           <a href="https://db-ip.com" target="_blank" rel="noopener">IP Geolocation by DB-IP</a>.</p>
+        <div class="row" style="margin-top:14px">
+          <button type="button" class="btn" id="update-ip">Check for updates now</button>
+          <span class="soft" id="update-ip-status" aria-live="polite"></span>
+        </div>
       </div>
     </section>`;
+
+  const updateBtn = $('#update-ip');
+  updateBtn.addEventListener('click', async () => {
+    const status = $('#update-ip-status');
+    updateBtn.disabled = true;
+    status.textContent = 'Checking DB-IP for a newer release…';
+    try {
+      const res = await api('/api/settings/ip-databases/update', { method: 'POST' });
+      if (!alive()) return;
+      state.settings = res.settings;
+      const month = x => new Date(`${x.built}T12:00:00Z`).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+      const lines = res.results.map(x => x.status === 'failed'
+        ? `${x.name}: couldn't update (${x.error})`
+        : x.status === 'updated' ? `${x.name}: updated to ${month(x)}` : `${x.name}: already up to date (${month(x)})`);
+      if (res.results.some(x => x.status === 'updated')) {
+        await settingsView(main, r, alive); // redraw the loaded dates
+        if (!alive()) return;
+      }
+      $('#update-ip-status').textContent = lines.join('. ') + '.';
+    } catch (ex) {
+      status.textContent = ex.message;
+    } finally {
+      updateBtn.disabled = false;
+    }
+  });
 
   const form = $('#address-form');
   const input = $('#public-url');

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -105,8 +106,13 @@ func (d *ipDatabase) lookup(ip string, rec any) {
 	}
 }
 
+// updateMu keeps the background updater and the Settings button from downloading at the same time.
+var updateMu sync.Mutex
+
 // update downloads the current month's release into dataDir if what's loaded is older, then swaps it in.
 func (d *ipDatabase) update(dataDir string) error {
+	updateMu.Lock()
+	defer updateMu.Unlock()
 	now := time.Now().UTC()
 	month := now.Format("2006-01")
 	if d.built().Format("2006-01") >= month {
@@ -165,6 +171,33 @@ func autoUpdateIPDatabases(dbPath string) {
 		}
 		time.Sleep(12 * time.Hour)
 	}
+}
+
+type ipUpdateResult struct {
+	Name   string `json:"name"`
+	Status string `json:"status"` // "updated", "current" or "failed"
+	Built  string `json:"built,omitempty"`
+	Error  string `json:"error,omitempty"`
+}
+
+// updateIPDatabasesNow is the Settings page's "Check for updates" button.
+func updateIPDatabasesNow(dataDir string) []ipUpdateResult {
+	out := []ipUpdateResult{}
+	for _, d := range ipDatabases {
+		before := d.built()
+		res := ipUpdateResult{Name: d.name, Status: "current"}
+		if err := d.update(dataDir); err != nil {
+			res.Status, res.Error = "failed", err.Error()
+			log.Printf("%s update failed: %v", d.name, err)
+		} else if d.built().After(before) {
+			res.Status = "updated"
+		}
+		if d.ready() {
+			res.Built = d.built().Format("2006-01-02")
+		}
+		out = append(out, res)
+	}
+	return out
 }
 
 // updateIPDatabases is the `omega geoip-update` command.

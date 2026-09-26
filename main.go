@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -75,6 +76,7 @@ func env(key, fallback string) string {
 }
 
 func routes() http.Handler {
+	dbPath := env("OMEGA_DB", "data/omega.db")
 	mux := http.NewServeMux()
 	public, _ := fs.Sub(assets, "public")
 
@@ -203,6 +205,10 @@ func routes() http.Handler {
 
 	api("GET /api/settings", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, settingsResponse())
+	})
+	api("POST /api/settings/ip-databases/update", func(w http.ResponseWriter, r *http.Request) {
+		results := updateIPDatabasesNow(filepath.Dir(dbPath))
+		writeJSON(w, 200, map[string]any{"results": results, "settings": settingsResponse()})
 	})
 	api("PUT /api/settings", func(w http.ResponseWriter, r *http.Request) {
 		var body struct{ PublicURL string }
