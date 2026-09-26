@@ -23,6 +23,9 @@ var assets embed.FS
 
 const maxBody = 32 << 10
 
+// version is set at build time: -ldflags "-X main.version=v1.2.3".
+var version = "dev"
+
 func main() {
 	dbPath := env("OMEGA_DB", "data/omega.db")
 	if err := openDB(dbPath); err != nil {
@@ -38,8 +41,10 @@ func main() {
 			err = seed()
 		case "geoip-update":
 			err = updateIPDatabases(dbPath)
+		case "version":
+			fmt.Println(version)
 		default:
-			err = fmt.Errorf("unknown command %q (commands: seed, geoip-update)", os.Args[1])
+			err = fmt.Errorf("unknown command %q (commands: seed, geoip-update, version)", os.Args[1])
 		}
 		if err != nil {
 			log.Fatal(err)
@@ -61,7 +66,7 @@ func main() {
 		ReadTimeout:       30 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
-	log.Printf("Omega Analytics running at http://localhost:%s", env("PORT", "3300"))
+	log.Printf("Omega Analytics %s running at http://localhost:%s", version, env("PORT", "3300"))
 	if !hasUsers() {
 		log.Print("No account yet: open the dashboard to create one.")
 	}

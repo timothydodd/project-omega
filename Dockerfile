@@ -6,8 +6,8 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-ARG TARGETOS TARGETARCH
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/omega .
+ARG TARGETOS TARGETARCH VERSION=dev
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w -X main.version=$VERSION" -o /out/omega .
 # Country + network databases (DB-IP Lite, CC BY 4.0), fetched with the app's own updater. These are the
 # fallback for a fresh install; the running server downloads each new monthly release into /data by itself.
 RUN OMEGA_DB=/tmp/geoip/omega.db go run . geoip-update && \

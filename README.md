@@ -12,7 +12,19 @@ Lightweight, self-hosted, first-party web analytics. **One ~11 MB Go binary, one
 - **Custom events**: `omega.track()` or a `data-omega-event` attribute.
 - **Bot detection**: likely bots are scored, explained per session, and kept out of the numbers by default.
 
-## Run it
+## Download
+
+Grab a ready-to-run binary for Windows, Linux or macOS (Intel and ARM) from [Releases](https://github.com/timothydodd/project-omega/releases). Unzip and run `omega` (`omega.exe` on Windows); nothing else is needed. The country and network databases download automatically on first start. `omega version` prints the version.
+
+Or use the container image: `ghcr.io/timothydodd/project-omega:<version>` (see [Container image](#container-image)).
+
+To publish a new release, push a version tag. The Release workflow builds the binaries, and the Container workflow builds the matching image:
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+## Build from source
 
 Requires **Go 1.26+** to build. The SQLite driver is pure Go, so no C compiler is needed and it cross-compiles to any platform.
 
@@ -138,7 +150,7 @@ public/        dashboard: plain ES modules and SVG charts, embedded into the bin
 ## Container image
 
 The **Container** workflow (`.github/workflows/container.yml`) runs `gofmt`, `go vet` and `go test`, then builds a multi-arch image (`linux/amd64`, `linux/arm64`).
-- It pushes the image to `ghcr.io/timothydodd/project-omega` on every push to `main` (tags `main`, `latest`, `sha-<short>`) and on `v*` tags (tag `1.2.3`).
+- It pushes the image to `ghcr.io/timothydodd/project-omega` on every push to `main` (tags `main`, `latest`, `sha-<short>`) and on `v*` tags (tag `1.2.3`, with the version built in).
 - Pull requests build without pushing.
 - It also rebuilds on the 3rd of each month so the bundled country and network databases stay fresh for new installs. Running servers update themselves.
 
