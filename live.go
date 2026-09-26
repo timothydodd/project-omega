@@ -28,11 +28,13 @@ type LiveVisitor struct {
 	PageStartedAt int64   `json:"pageStartedAt"`
 	LastSeen      int64   `json:"lastSeen"`
 	Pageviews     int64   `json:"pageviews"`
+	Bot           bool    `json:"-"` // likely bot: kept out of the live list
 }
 
 type LiveSnapshot struct {
 	Now      int64         `json:"now"`
 	Count    int           `json:"count"`
+	Bots     int           `json:"bots"` // likely bots active right now (not in Visitors)
 	Visitors []LiveVisitor `json:"visitors"`
 }
 
@@ -101,6 +103,15 @@ func (p *presence) identify(siteID int64, sessionID, userID string, userName *st
 	}
 }
 
+func (p *presence) setBot(siteID int64, sessionID string, bot bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if v := p.bySite[siteID][sessionID]; v != nil && v.Bot != bot {
+		v.Bot = bot
+		p.dirty[siteID] = true
+	}
+}
+
 // rekey moves a session to new ids (a cookieless session adopted by a cookie after consent).
 func (p *presence) rekey(siteID int64, oldID, newID, visitorID string) {
 	p.mu.Lock()
@@ -123,13 +134,18 @@ func (p *presence) snapshot(siteID int64) LiveSnapshot {
 func (p *presence) snapshotLocked(siteID int64) LiveSnapshot {
 	now := time.Now().UnixMilli()
 	out := []LiveVisitor{}
+	bots := 0
 	for _, v := range p.bySite[siteID] {
-		if now-v.LastSeen < liveWindow.Milliseconds() {
+		switch {
+		case now-v.LastSeen >= liveWindow.Milliseconds():
+		case v.Bot:
+			bots++
+		default:
 			out = append(out, *v)
 		}
 	}
 	slices.SortFunc(out, func(a, b LiveVisitor) int { return cmp.Compare(b.LastSeen, a.LastSeen) })
-	return LiveSnapshot{Now: now, Count: len(out), Visitors: out}
+	return LiveSnapshot{Now: now, Count: len(out), Bots: bots, Visitors: out}
 }
 
 // serveStream is the Server-Sent Events endpoint the dashboard listens on.
@@ -231,6 +247,7 @@ func liveFromSession(r Row, pageStartedAt int64) LiveVisitor {
 		Path: str(r, "exit_path"), Title: strPtr(str(r, "exit_title")),
 		Source: str(r, "source"), Device: str(r, "device"), Browser: str(r, "browser"), Country: strPtr(str(r, "country")),
 		StartedAt: i64(r, "started_at"), PageStartedAt: pageStartedAt, LastSeen: time.Now().UnixMilli(), Pageviews: i64(r, "pageviews"),
+		Bot: i64(r, "bot") == 1,
 	}
 }
 

@@ -102,6 +102,12 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_ts ON events(site_id, ts);
 CREATE INDEX IF NOT EXISTS events_session ON events(session_id, ts);
 
+-- App-wide settings (key/value), e.g. the public address used in tracking snippets.
+CREATE TABLE IF NOT EXISTS settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
 -- One random salt per UTC day for cookieless visitor ids. Old salts are deleted, so ids can't be linked across days.
 CREATE TABLE IF NOT EXISTS salts (
   day  TEXT PRIMARY KEY,
@@ -128,6 +134,12 @@ func openDB(path string) error {
 		{"sites", "privacy", "TEXT NOT NULL DEFAULT 'cookieless'"},
 		{"sessions", "id_method", "TEXT NOT NULL DEFAULT 'cookie'"},
 		{"visitors", "cookieless", "INTEGER NOT NULL DEFAULT 0"},
+		// Bot detection (see bots.go): signal bitmask, score, verdict, and whether a person interacted.
+		{"sessions", "bot_signals", "INTEGER NOT NULL DEFAULT 0"},
+		{"sessions", "bot_score", "INTEGER NOT NULL DEFAULT 0"},
+		{"sessions", "bot", "INTEGER NOT NULL DEFAULT 0"},
+		{"sessions", "interacted", "INTEGER NOT NULL DEFAULT 0"},
+		{"sessions", "network", "TEXT"}, // network owner (ASN organisation), e.g. "Comcast Cable" or "Amazon.com"
 	} {
 		if err := addColumn(m[0], m[1], m[2]); err != nil {
 			return err

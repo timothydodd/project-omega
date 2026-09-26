@@ -31,6 +31,8 @@ type Hit struct {
 	Ep  json.RawMessage `json:"ep"`  // event props
 	UID string          `json:"uid"` // identify: your user id
 	Tr  json.RawMessage `json:"tr"`  // identify: traits (email, name, plan...)
+	BS  int64           `json:"bs"`  // browser signals for bot detection (bits, see bots.go)
+	I   int             `json:"i"`   // 1 once a person has scrolled, clicked, tapped or typed on this page
 }
 
 type identity struct {
@@ -97,13 +99,13 @@ func collect(r *http.Request, body []byte) *collectError {
 }
 
 // countryOf prefers a CDN's country header, then the GeoIP database. "XX"/"T1" (unknown/Tor) count as unknown.
-func countryOf(r *http.Request) string {
+func countryOf(r *http.Request, ip string) string {
 	for _, h := range []string{"CF-IPCountry", "X-Vercel-IP-Country", "X-Country-Code"} {
 		if v := strings.ToUpper(strings.TrimSpace(r.Header.Get(h))); len(v) == 2 && v != "XX" && v != "T1" {
 			return v
 		}
 	}
-	return lookupCountry(clientIP(r))
+	return lookupCountry(ip)
 }
 
 // cookieIdentity uses the cookie ids, but only when the site allows cookies.
@@ -171,7 +173,8 @@ func pageview(site Site, hit *Hit, r *http.Request, ua string, now time.Time) *c
 	}
 
 	id := pageviewIdentity(site, hit, r, now)
-	if owner, _ := rowOf(db, "SELECT site_id FROM sessions WHERE id = ?", id.sessionID); owner != nil && i64(owner, "site_id") != site.ID {
+	owner, _ := rowOf(db, "SELECT site_id FROM sessions WHERE id = ?", id.sessionID)
+	if owner != nil && i64(owner, "site_id") != site.ID {
 		return &collectError{409, "Session belongs to another site"}
 	}
 
@@ -191,8 +194,11 @@ func pageview(site Site, hit *Hit, r *http.Request, ua string, now time.Time) *c
 		utmSource = q.Get("ref")
 	}
 	utmSource = truncate(utmSource, 100)
-	country := countryOf(r)
 	ag := parseUA(ua, hit.Sw)
+	ip := clientIP(r)
+	network := truncate(lookupNetwork(ip), 200)
+	signals := requestSignals(r, hit.BS, ag, network, owner == nil, ip)
+	country := countryOf(r, ip)
 	screen := ""
 	if hit.Sw > 0 && hit.Sh > 0 {
 		screen = strings.Join([]string{itoa(int64(hit.Sw)), itoa(int64(hit.Sh))}, "x")
@@ -225,18 +231,24 @@ func pageview(site Site, hit *Hit, r *http.Request, ua string, now time.Time) *c
 			return err
 		}
 		if existing != nil {
-			if _, err := tx.Exec(`UPDATE sessions SET last_seen = ?, exit_path = ?, exit_title = ?, pageviews = pageviews + 1 WHERE id = ?`,
-				ms, path, nullable(title), id.sessionID); err != nil {
+			if _, err := tx.Exec(`UPDATE sessions SET last_seen = ?, exit_path = ?, exit_title = ?, pageviews = pageviews + 1,
+				bot_signals = bot_signals | ? WHERE id = ?`,
+				ms, path, nullable(title), signals, id.sessionID); err != nil {
 				return err
 			}
 			lv.Pageviews, lv.Source, lv.StartedAt = i64(existing, "pageviews")+1, str(existing, "source"), i64(existing, "started_at")
 		} else if _, err := tx.Exec(`INSERT INTO sessions (id, site_id, visitor_id, id_method, started_at, last_seen, entry_path, exit_path,
-				exit_title, pageviews, referrer, source, utm_source, utm_medium, utm_campaign, browser, os, device, country, language, timezone, screen)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				exit_title, pageviews, referrer, source, utm_source, utm_medium, utm_campaign, browser, os, device, country, language, timezone, screen,
+			network, bot_signals)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			id.sessionID, site.ID, id.visitorID, id.method, ms, ms, path, path, nullable(title),
 			nullable(referrer), lv.Source, nullable(utmSource), nullable(truncate(q.Get("utm_medium"), 100)),
 			nullable(truncate(q.Get("utm_campaign"), 200)), ag.Browser, ag.OS, ag.Device, nullable(country),
-			nullable(truncate(hit.L, 20)), nullable(truncate(hit.Tz, 64)), nullable(screen)); err != nil {
+			nullable(truncate(hit.L, 20)), nullable(truncate(hit.Tz, 64)), nullable(screen),
+			nullable(network), signals|sigNoInteraction.bit); err != nil {
+			return err
+		}
+		if lv.Bot, err = rescore(tx, id.sessionID, ms); err != nil {
 			return err
 		}
 		_, err = tx.Exec(`INSERT OR IGNORE INTO pageviews (id, site_id, session_id, visitor_id, ts, path, title) VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -261,6 +273,7 @@ func heartbeat(site Site, hit *Hit, now time.Time) *collectError {
 		db.Exec("UPDATE pageviews SET duration = max(duration, ?) WHERE id = ? AND site_id = ?", engaged, hit.P, site.ID)
 	}
 	db.Exec("UPDATE sessions SET last_seen = ? WHERE id = ? AND site_id = ?", ms, id.sessionID, site.ID)
+	noteBrowser(site.ID, id.sessionID, hit, ms)
 	if hit.T == "leave" {
 		live.leave(site.ID, id.sessionID)
 	} else if !live.ping(site.ID, id.sessionID, ms) {
@@ -293,7 +306,48 @@ func event(site Site, hit *Hit, now time.Time) *collectError {
 		return &collectError{500, err.Error()}
 	}
 	db.Exec("UPDATE sessions SET last_seen = ? WHERE id = ?", ms, id.sessionID)
+	noteBrowser(site.ID, id.sessionID, hit, ms)
 	return nil
+}
+
+// noteBrowser records a first interaction and browser checks that finished after the page view, then rescores.
+func noteBrowser(siteID int64, sessionID string, hit *Hit, ms int64) {
+	if hit.I != 1 && hit.BS == 0 {
+		return
+	}
+	s, _ := rowOf(db, "SELECT browser, device, interacted, bot_signals FROM sessions WHERE id = ?", sessionID)
+	if s == nil {
+		return
+	}
+	signals := i64(s, "bot_signals") | clientSignals(hit.BS, str(s, "browser"), str(s, "device"))
+	interacted := i64(s, "interacted")
+	if hit.I == 1 {
+		interacted = 1
+		signals &^= sigNoInteraction.bit
+	}
+	if signals == i64(s, "bot_signals") && interacted == i64(s, "interacted") {
+		return
+	}
+	db.Exec("UPDATE sessions SET bot_signals = ?, interacted = ? WHERE id = ?", signals, interacted, sessionID)
+	if bot, err := rescore(db, sessionID, ms); err == nil {
+		live.setBot(siteID, sessionID, bot)
+	}
+}
+
+// rescore recomputes a session's bot score from its stored signals and pace.
+func rescore(q querier, sessionID string, now int64) (bool, error) {
+	s, err := rowOf(q, "SELECT bot_signals, interacted, pageviews, started_at FROM sessions WHERE id = ?", sessionID)
+	if err != nil || s == nil {
+		return false, err
+	}
+	signals := i64(s, "bot_signals")
+	if fastNavigation(i64(s, "pageviews"), i64(s, "started_at"), now) {
+		signals |= sigFastNavigation.bit
+	}
+	score := botScore(signals, i64(s, "interacted") == 1)
+	bot := score >= botThreshold
+	_, err = q.Exec("UPDATE sessions SET bot_signals = ?, bot_score = ?, bot = ? WHERE id = ?", signals, score, bot, sessionID)
+	return bot, err
 }
 
 func identify(site Site, hit *Hit, now time.Time) *collectError {

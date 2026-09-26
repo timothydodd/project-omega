@@ -93,9 +93,14 @@
     if (lastUrl && sessionExpired() && (payload.t === 'ping' || payload.t === 'event' || payload.t === 'identify')) {
       lastUrl = null;
       pageviewId = null;
+      interacted = interactedSent = false; // the new session has to show its own interaction
       pageview();
       if (payload.t === 'ping') return;
       payload.p = pageviewId;
+    }
+    if (payload.t !== 'pageview' && payload.t !== 'consent') {
+      if (interacted && !interactedSent) { payload.i = 1; interactedSent = true; }
+      if (lateChecks) { payload.bs = lateChecks; lateChecks = 0; }
     }
     payload.k = key;
     if (cookiesOn) {
@@ -108,6 +113,47 @@
     if (navigator.sendBeacon && navigator.sendBeacon(api, body)) return;
     try { fetch(api, { method: 'POST', body: body, keepalive: true, mode: 'cors', credentials: 'omit' }); } catch (e) {}
   }
+
+  // ---- Bot checks ----
+  // Yes/no browser checks sent as bits (see bots.go). Nothing identifying is collected.
+  function browserChecks() {
+    var bits = 0;
+    try {
+      var ua = navigator.userAgent;
+      if (window.outerWidth === 0 || window.outerHeight === 0) bits |= 1;          // headless window
+      if (!navigator.languages || navigator.languages.length === 0) bits |= 2;     // no languages
+      if (navigator.plugins && navigator.plugins.length === 0) bits |= 8;          // no plugins (server ignores on mobile)
+      // Chromium browsers expose window.chrome; Android in-app WebViews ("; wv)") legitimately don't.
+      if (/Chrome\//.test(ua) && !/; wv\)/.test(ua) && !window.chrome) bits |= 16;
+    } catch (e) {}
+    return bits;
+  }
+
+  // Software rendering (no GPU) is typical of headless browsers. Creating a WebGL context costs a few ms,
+  // so it runs when the browser is idle and is reported with the next ping.
+  var lateChecks = 0;
+  (window.requestIdleCallback || setTimeout)(function () {
+    try {
+      var gl = document.createElement('canvas').getContext('webgl');
+      if (!gl) return;
+      var info = gl.getExtension('WEBGL_debug_renderer_info');
+      var renderer = String(gl.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : gl.RENDERER));
+      if (/SwiftShader|llvmpipe|softpipe|Software Rasterizer/i.test(renderer)) lateChecks |= 4;
+      var lose = gl.getExtension('WEBGL_lose_context');
+      if (lose) lose.loseContext();
+    } catch (e) {}
+  });
+
+  // A real scroll, click, tap, keypress or mouse movement shows a person is there.
+  var interacted = false;
+  var interactedSent = false;
+  ['scroll', 'pointerdown', 'mousemove', 'keydown', 'touchstart'].forEach(function (type) {
+    addEventListener(type, function onInteract(e) {
+      if (!e.isTrusted || interacted) return;
+      interacted = true;
+      if (pageviewId) send({ t: 'ping', p: pageviewId, e: engaged() });
+    }, { passive: true, capture: true });
+  });
 
   // ---- Page views and engaged time ----
   var engagedMs = 0;
@@ -128,7 +174,7 @@
     engagedMs = 0;
     visibleSince = document.visibilityState === 'visible' ? Date.now() : null;
     send({
-      t: 'pageview', p: pageviewId, pp: previous || undefined, u: url, r: referrer, ti: document.title,
+      t: 'pageview', p: pageviewId, pp: previous || undefined, u: url, r: referrer, ti: document.title, bs: browserChecks(),
       sw: screen.width, sh: screen.height, l: navigator.language,
       tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
     });

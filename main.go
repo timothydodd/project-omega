@@ -36,7 +36,7 @@ func main() {
 		case "seed":
 			err = seed()
 		case "geoip-update":
-			err = updateGeoIP(geoipPath(dbPath))
+			err = updateIPDatabases(dbPath)
 		default:
 			err = fmt.Errorf("unknown command %q (commands: seed, geoip-update)", os.Args[1])
 		}
@@ -46,7 +46,8 @@ func main() {
 		return
 	}
 
-	openGeoIP(geoipPath(dbPath))
+	openIPDatabases(dbPath)
+	go autoUpdateIPDatabases(dbPath)
 
 	live.restore()
 	go live.run()
@@ -200,15 +201,39 @@ func routes() http.Handler {
 		respond(w, map[string]bool{"ok": true}, deleteSite(id))
 	})
 
+	api("GET /api/settings", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, settingsResponse())
+	})
+	api("PUT /api/settings", func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ PublicURL string }
+		if !readJSON(w, r, &body) {
+			return
+		}
+		if _, fromEnv := publicURL(); fromEnv {
+			fail(w, 409, "The address is set by the OMEGA_PUBLIC_URL environment variable on the server. Change it there.")
+			return
+		}
+		u, err := normalizePublicURL(body.PublicURL)
+		if err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
+		if err := setSetting("public_url", u); err != nil {
+			serverError(w, err)
+			return
+		}
+		writeJSON(w, 200, settingsResponse())
+	})
+
 	api("GET /api/stats", withSite(func(w http.ResponseWriter, r *http.Request, s Site) {
 		q := r.URL.Query()
 		tz, _ := strconv.ParseInt(q.Get("tz"), 10, 64)
 		out, err := overview(statsQuery{
 			SiteID: s.ID, Range: validRange(q.Get("range")), TzOffset: min(max(tz, -840), 840),
-			Path: q.Get("path"), Source: q.Get("source"), Country: q.Get("country"),
+			Path: q.Get("path"), Source: q.Get("source"), Country: q.Get("country"), Bots: q.Get("bots") == "1",
 		})
 		if out != nil {
-			out["geoip"] = geo != nil
+			out["geoip"] = countryDB.ready()
 		}
 		respond(w, out, err)
 	}))
@@ -220,7 +245,7 @@ func routes() http.Handler {
 	}))
 	api("GET /api/sessions", withSite(func(w http.ResponseWriter, r *http.Request, s Site) {
 		before, _ := strconv.ParseInt(r.URL.Query().Get("before"), 10, 64)
-		rows, err := listSessions(s.ID, before, r.URL.Query().Get("visitor"))
+		rows, err := listSessions(s.ID, before, r.URL.Query().Get("visitor"), r.URL.Query().Get("bots") == "1")
 		respond(w, rows, err)
 	}))
 	api("GET /api/sessions/{id}", withSite(func(w http.ResponseWriter, r *http.Request, s Site) {
@@ -234,7 +259,7 @@ func routes() http.Handler {
 	api("GET /api/visitors", withSite(func(w http.ResponseWriter, r *http.Request, s Site) {
 		q := r.URL.Query()
 		before, _ := strconv.ParseInt(q.Get("before"), 10, 64)
-		rows, err := listVisitors(s.ID, before, q.Get("q"), q.Get("identified") == "1")
+		rows, err := listVisitors(s.ID, before, q.Get("q"), q.Get("identified") == "1", q.Get("bots") == "1")
 		respond(w, rows, err)
 	}))
 	api("GET /api/visitors/{id}", withSite(func(w http.ResponseWriter, r *http.Request, s Site) {

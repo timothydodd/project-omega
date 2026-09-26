@@ -36,6 +36,9 @@ spec:
           env:
             - name: OMEGA_DB
               value: /data/omega.db
+            # Public address used in tracking snippets (otherwise set it on the dashboard's Settings page).
+            # - name: OMEGA_PUBLIC_URL
+            #   value: https://analytics.example.com
           readinessProbe:
             httpGet: { path: /healthz, port: http }
             periodSeconds: 10

@@ -22,6 +22,7 @@ type statsQuery struct {
 	Path     string // only sessions that viewed this page
 	Source   string // only sessions from this source
 	Country  string // only sessions from this country (ISO code, or "Unknown")
+	Bots     bool   // include sessions that look like bots
 }
 
 type window struct{ since, until, bucket int64 }
@@ -55,6 +56,9 @@ func windowFor(q statsQuery, now int64) window {
 
 // filters adds the page/source filters (sessions alias `s`).
 func (q statsQuery) filters(sql string, args []any) (string, []any) {
+	if !q.Bots {
+		sql += " AND s.bot = 0"
+	}
 	if q.Source != "" {
 		sql += " AND s.source = ?"
 		args = append(args, q.Source)
@@ -254,8 +258,14 @@ func overview(q statsQuery) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	// How many sessions the bot filter is hiding in this range (other filters still apply).
+	withBots := q
+	withBots.Bots = true
+	bw, bargs := withBots.sessionScope(w.since, w.until)
+	hidden, _ := rowOf(db, "SELECT COUNT(*) n FROM sessions s WHERE "+bw+" AND s.bot = 1", bargs...)
+
 	out := map[string]any{
-		"range": q.Range, "since": w.since, "until": w.until,
+		"range": q.Range, "since": w.since, "until": w.until, "botSessions": i64(hidden, "n"), "bots": q.Bots,
 		"windows": windows, "kpis": cur, "previous": prev, "series": series,
 	}
 	return out, q.breakdowns(w, out)
@@ -275,9 +285,12 @@ func withJSON(r Row, cols ...string) Row {
 	return r
 }
 
-func listSessions(siteID int64, before int64, visitorID string) ([]Row, error) {
+func listSessions(siteID int64, before int64, visitorID string, bots bool) ([]Row, error) {
 	where := []string{"s.site_id = ?"}
 	args := []any{siteID}
+	if !bots {
+		where = append(where, "s.bot = 0")
+	}
 	if before > 0 {
 		where, args = append(where, "s.started_at < ?"), append(args, before)
 	}
@@ -309,12 +322,18 @@ func sessionDetail(siteID int64, id string) (map[string]any, error) {
 	for _, e := range events {
 		withJSON(e, "props")
 	}
+	s["bot_reasons"] = botLabels(i64(s, "bot_signals"))
+	s["bot_threshold"] = botThreshold
 	return map[string]any{"session": withJSON(s, "traits"), "pageviews": pageviews, "events": events}, err
 }
 
-func listVisitors(siteID int64, before int64, search string, identified bool) ([]Row, error) {
+func listVisitors(siteID int64, before int64, search string, identified, bots bool) ([]Row, error) {
 	where := []string{"v.site_id = ?"}
 	args := []any{siteID}
+	if !bots {
+		// Hide visitors whose every session looks like a bot.
+		where = append(where, "EXISTS (SELECT 1 FROM sessions b WHERE b.site_id = v.site_id AND b.visitor_id = v.id AND b.bot = 0)")
+	}
 	if before > 0 {
 		where, args = append(where, "v.last_seen < ?"), append(args, before)
 	}

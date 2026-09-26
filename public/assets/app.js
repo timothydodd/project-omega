@@ -100,6 +100,7 @@ const state = {
   siteId: Number(store.get('omega.site')) || null,
   range: store.get('omega.range') || '7d',
   metric: 'visitors',
+  settings: { publicUrl: '' },
   live: { count: 0, visitors: [], now: Date.now() },
 };
 let liveSource = null;
@@ -147,11 +148,12 @@ const ICONS = {
   sessions: '<path d="M3 5h14M3 10h14M3 15h9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>',
   visitors: '<circle cx="10" cy="7" r="3.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3.5 17c.8-3.2 3.4-5 6.5-5s5.7 1.8 6.5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>',
   sites: '<circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3 10h14M10 3c2 2 3 4.4 3 7s-1 5-3 7c-2-2-3-4.4-3-7s1-5 3-7z" fill="none" stroke="currentColor" stroke-width="1.6"/>',
+  settings: '<circle cx="10" cy="10" r="2.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10 2.5v2.2M10 15.3v2.2M2.5 10h2.2M15.3 10h2.2M4.7 4.7l1.6 1.6M13.7 13.7l1.6 1.6M4.7 15.3l1.6-1.6M13.7 6.3l1.6-1.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>',
 };
 const LOGO = `<svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#2a78d6"/><path d="M9 23h4.5v-2.2A7 7 0 1 1 18.5 20.8V23H23" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
 function renderShell(view) {
-  const nav = [['overview', 'Overview'], ['live', 'Live'], ['sessions', 'Sessions'], ['visitors', 'Visitors'], ['sites', 'Sites']];
+  const nav = [['overview', 'Overview'], ['live', 'Live'], ['sessions', 'Sessions'], ['visitors', 'Visitors'], ['sites', 'Sites'], ['settings', 'Settings']];
   $('#app').innerHTML = `
     <div class="shell">
       <aside class="rail">
@@ -228,7 +230,7 @@ async function render() {
   const r = route();
   let view = r.parts[0] || 'overview';
   if (!VIEWS[view]) view = 'overview';
-  if (!state.sites.length && view !== 'sites') { location.hash = '#/sites'; return; }
+  if (!state.sites.length && view !== 'sites' && view !== 'settings') { location.hash = '#/sites'; return; }
   renderShell(view);
   const main = $('#main');
   try {
@@ -242,9 +244,10 @@ async function render() {
 const VIEWS = {
   overview: overviewView,
   live: liveView,
-  sessions: (main, r, alive) => (r.parts[1] ? sessionDetailView(main, r.parts[1], alive) : sessionsView(main, alive)),
+  sessions: (main, r, alive) => (r.parts[1] ? sessionDetailView(main, r.parts[1], alive) : sessionsView(main, r, alive)),
   visitors: (main, r, alive) => (r.parts[1] ? visitorDetailView(main, r.parts[1], alive) : visitorsView(main, r, alive)),
   sites: sitesView,
+  settings: settingsView,
 };
 
 // ----- Overview -----
@@ -252,10 +255,12 @@ async function overviewView(main, r, alive) {
   const path = r.params.get('path');
   const source = r.params.get('source');
   const country = r.params.get('country');
+  const bots = r.params.get('bots') === '1';
   const chips = [
     path && ['path', `Page is ${path}`],
     source && ['source', `Source is ${source}`],
     country && ['country', `Country is ${countryName(country)}`],
+    bots && ['bots', 'Including likely bots'],
   ].filter(Boolean);
   main.innerHTML = pageHead('Overview', rangeControl()) +
     (chips.length ? `<div class="chips">${chips.map(([k, label]) => `<span class="chip">${esc(label)}<button type="button" data-clear="${k}" aria-label="Remove filter: ${esc(label)}">×</button></span>`).join('')}</div>` : '') +
@@ -267,12 +272,16 @@ async function overviewView(main, r, alive) {
   if (path) q.set('path', path);
   if (source) q.set('source', source);
   if (country) q.set('country', country);
+  if (bots) q.set('bots', '1');
   const d = await api(`/api/stats?${q}`);
   if (!alive()) return;
   const prevLabel = RANGES.find(x => x[0] === state.range)[2];
   const ov = $('#ov');
 
   const noData = d.kpis.sessions === 0 && d.windows.every(w => w.visitors === 0) && !path && !source;
+  const botNote = !bots && d.botSessions > 0
+    ? `<p class="footnote">Hiding ${fmtNum(d.botSessions)} ${d.botSessions === 1 ? 'session' : 'sessions'} in this period that ${d.botSessions === 1 ? 'looks' : 'look'} like ${d.botSessions === 1 ? 'a bot' : 'bots'}. <a href="${hrefWith({ bots: '1' })}">Include them</a></p>`
+    : '';
   ov.innerHTML = `
     ${noData ? `<div class="card card-body" style="margin-bottom:16px">No visits recorded yet. <a href="#/sites">Add the tracking script</a> to ${esc(site()?.name)}, then open a page on the site. You'll show up on the Live view within a few seconds.</div>` : ''}
     <section class="windows" aria-label="Unique visitors">
@@ -288,6 +297,7 @@ async function overviewView(main, r, alive) {
           ${delta(w.visitors, w.previous, WINDOW_LABELS[w.key][1])}
         </div>`).join('')}
     </section>
+    ${botNote}
     ${d.windows.some(w => w.estimated) || d.kpis.visitorsEstimated ? `<p class="footnote">≈ Includes cookieless visitors, who are recognised for one day at a time. Someone who comes back on several days is counted once per day, so multi-day totals run high.</p>` : ''}
     <section class="card" aria-label="Trend">
       <div class="metrics" role="tablist">
@@ -430,7 +440,7 @@ async function liveView(main) {
       <section class="card live-head" aria-live="polite">
         <span class="pulse" aria-hidden="true"></span>
         <div><div class="big num">${fmtNum(l.count)}</div></div>
-        <div><div>${l.count === 1 ? 'person' : 'people'} on ${esc(site()?.name)} right now</div><div class="muted">Anyone active in the last minute. Updates every few seconds.</div></div>
+        <div><div>${l.count === 1 ? 'person' : 'people'} on ${esc(site()?.name)} right now</div><div class="muted">Anyone active in the last minute. Updates every few seconds.${l.bots ? ` Not counting ${l.bots} likely ${l.bots === 1 ? 'bot' : 'bots'}.` : ''}</div></div>
       </section>
       <div class="live-grid" style="margin-top:16px">
         <section class="card">
@@ -474,7 +484,7 @@ async function liveView(main) {
 function sessionRows(sessions, { showVisitor = true } = {}) {
   return sessions.map(s => `
     <tr data-href="#/sessions/${esc(s.id)}" tabindex="0">
-      ${showVisitor ? `<td>${person(s.traits, s.user_id, s.visitor_id)}</td>` : ''}
+      ${showVisitor ? `<td>${person(s.traits, s.user_id, s.visitor_id, s.bot ? '<span class="tag bot">Likely bot</span>' : '')}</td>` : ''}
       <td>${esc(s.source)}${s.utm_campaign ? `<div class="sub">${esc(s.utm_campaign)}</div>` : ''}</td>
       <td><div class="path">${esc(s.entry_path)}</div>${s.pageviews > 1 ? `<div class="sub">then ${s.pageviews - 1} more ${s.pageviews === 2 ? 'page' : 'pages'}, left from ${esc(s.exit_path)}</div>` : '<div class="sub">Single page</div>'}</td>
       <td class="num">${fmtDur(s.last_seen - s.started_at)}</td>
@@ -484,9 +494,16 @@ function sessionRows(sessions, { showVisitor = true } = {}) {
     </tr>`).join('');
 }
 
-async function sessionsView(main, alive) {
-  main.innerHTML = `${pageHead('Sessions')}<section class="card"><div class="loading">Loading…</div></section>`;
-  let rows = await api(`/api/sessions?site=${state.siteId}`);
+async function sessionsView(main, r, alive) {
+  const bots = r.params.get('bots') === '1';
+  main.innerHTML = `${pageHead('Sessions', `
+    <div class="segmented" role="group" aria-label="Show">
+      <button type="button" data-bots="0" aria-pressed="${!bots}">People</button>
+      <button type="button" data-bots="1" aria-pressed="${bots}">Include likely bots</button>
+    </div>`)}<section class="card"><div class="loading">Loading…</div></section>`;
+  main.querySelectorAll('[data-bots]').forEach(b => b.addEventListener('click', () => { location.hash = hrefWith({ bots: b.dataset.bots === '1' ? '1' : null }); }));
+  const base = `/api/sessions?site=${state.siteId}${bots ? '&bots=1' : ''}`;
+  let rows = await api(base);
   if (!alive()) return;
   const card = main.querySelector('.card');
   const draw = (hasMore) => {
@@ -498,7 +515,7 @@ async function sessionsView(main, alive) {
       ${hasMore ? '<div class="card-body"><button type="button" class="btn small" id="more">Load older sessions</button></div>' : ''}`
       : '<div class="empty">No sessions yet.</div>';
     $('#more')?.addEventListener('click', async () => {
-      const older = await api(`/api/sessions?site=${state.siteId}&before=${rows.at(-1).started_at}`);
+      const older = await api(`${base}&before=${rows.at(-1).started_at}`);
       if (!alive()) return;
       rows = rows.concat(older);
       draw(older.length === 50);
@@ -540,6 +557,7 @@ async function sessionDetailView(main, id, alive) {
           </ol>
         </div>
       </section>
+      <div class="stack" style="gap:16px">
       <section class="card">
         <div class="card-head"><h2>Details</h2></div>
         <div class="card-body">
@@ -555,9 +573,18 @@ async function sessionDetailView(main, id, alive) {
             ${s.country ? `<div><dt>Country</dt><dd>${esc(countryName(s.country))}</dd></div>` : ''}
             ${s.language ? `<div><dt>Language</dt><dd>${esc(s.language)}</dd></div>` : ''}
             ${s.timezone ? `<div><dt>Time zone</dt><dd>${esc(s.timezone)}</dd></div>` : ''}
+            ${s.network ? `<div style="grid-column:1/-1"><dt>Network</dt><dd>${esc(s.network)}</dd></div>` : ''}
           </dl>
         </div>
       </section>
+      <section class="card">
+        <div class="card-head"><h2>Bot check</h2><span class="spacer"></span>${s.bot ? '<span class="tag bot">Likely bot</span>' : '<span class="tag">Looks like a person</span>'}</div>
+        <div class="card-body">
+          <p class="soft" style="margin:0 0 8px">Score ${s.bot_score} (${s.bot_threshold} or more counts as a bot).${s.interacted ? ' The visitor scrolled, clicked, tapped or typed.' : ''}</p>
+          ${s.bot_reasons.length ? `<ul class="reasons">${s.bot_reasons.map(r => `<li>${esc(r)}</li>`).join('')}</ul>` : '<p class="muted" style="margin:0">No bot signals.</p>'}
+        </div>
+      </section>
+      </div>
     </div>`;
 }
 
@@ -657,9 +684,20 @@ const PRIVACY = {
   },
 };
 
-function snippet(s) {
+/** The address sites load the tracker from: the saved public address, or this page's origin until one is set. */
+function trackerBase() {
+  return state.settings.publicUrl || location.origin;
+}
+
+function snippet(s, base = trackerBase()) {
   const attr = { cookieless: '', consent: ' data-cookies="consent"', cookies: ' data-cookies="always"' }[s.privacy] ?? '';
-  return `<script defer src="${location.origin}/t.js" data-site="${s.key}"${attr}></script>`;
+  return `<script defer src="${base}/t.js" data-site="${s.key}"${attr}></script>`;
+}
+
+// Nudge to set the public address, shown where snippets appear.
+function addressNotice() {
+  if (state.settings.publicUrl) return '';
+  return `<div class="notice">Snippets below use the address you opened the dashboard on (<b>${esc(location.origin)}</b>). If your sites reach this server at a different address, <a href="#/settings">set it in Settings</a>.</div>`;
 }
 
 async function sitesView(main, r, alive) {
@@ -692,6 +730,7 @@ async function sitesView(main, r, alive) {
 
   main.innerHTML = `
     ${pageHead('Sites', adding ? '' : '<a class="btn primary" href="#/sites?add=1">Add site</a>')}
+    ${state.sites.length ? addressNotice() : ''}
     ${adding ? `<section class="card" style="margin-bottom:16px"><div class="card-head"><h2>${state.sites.length ? 'Add a site' : 'Add your first site'}</h2></div><div class="card-body">${siteForm(null)}</div></section>` : ''}
     ${state.sites.length ? `<section class="card">${state.sites.map(s => `
       <div class="site-row" id="site-${s.id}">
@@ -768,6 +807,83 @@ localStorage.setItem('omega_ignore', '1');</pre>
   }));
 }
 
+// ----- Settings -----
+async function settingsView(main, r, alive) {
+  state.settings = await api('/api/settings');
+  if (!alive()) return;
+  const st = state.settings;
+  const example = state.sites[0] ?? { key: 'site_xxxxxxxx', privacy: 'cookieless' };
+  const lookupRow = (label, info, use) => `
+    <div><dt>${label}</dt><dd>${info.ready ? `On, database from ${esc(fmtDate(Date.parse(`${info.built}T12:00:00Z`)))}` : '<span class="muted">Off: no database yet</span>'}</dd>
+    <dd class="muted" style="font-weight:400;margin-top:2px">${use}</dd></div>`;
+
+  main.innerHTML = `
+    ${pageHead('Settings')}
+    <section class="card" style="margin-bottom:16px">
+      <div class="card-head"><h2>Analytics address</h2></div>
+      <div class="card-body">
+        <form class="stack" id="address-form">
+          <div class="field">
+            <label for="public-url">Public address of this server</label>
+            <input class="input" id="public-url" name="publicUrl" value="${esc(st.publicUrl)}" placeholder="https://analytics.example.com" ${st.publicUrlFromEnv ? 'disabled' : ''} autocomplete="off" spellcheck="false">
+            <span class="hint">${st.publicUrlFromEnv
+              ? 'Set on the server with OMEGA_PUBLIC_URL. Change it there.'
+              : 'The address your websites use to reach Omega. It goes into every tracking snippet. Leave empty to use the address you open the dashboard on.'}</span>
+          </div>
+          <div>
+            <p class="soft" style="margin:0 0 6px">Your sites' snippet will look like this:</p>
+            <pre class="snippet" id="snippet-preview"></pre>
+          </div>
+          <p class="error" hidden></p>
+          ${st.publicUrlFromEnv ? '' : `<div class="row">
+            <button class="btn primary" type="submit">Save address</button>
+            <button class="btn" type="button" id="use-current">Use ${esc(location.origin)}</button>
+            <span class="muted" id="saved" aria-live="polite"></span>
+          </div>`}
+        </form>
+      </div>
+    </section>
+    <section class="card">
+      <div class="card-head"><h2>IP lookups</h2></div>
+      <div class="card-body">
+        <dl class="facts" style="grid-template-columns:1fr 1fr">
+          ${lookupRow('Country lookup', st.countryLookup, 'Which country visitors are in.')}
+          ${lookupRow('Network lookup', st.networkLookup, 'Spots visits from data centres, a strong sign of bots.')}
+        </dl>
+        <p class="muted" style="margin:14px 0 0">${st.autoUpdate
+          ? 'New monthly releases download automatically; no restart needed.'
+          : 'Automatic updates are off (OMEGA_IP_DB_UPDATE=off). Run "omega geoip-update" to update.'}
+          IP addresses are only used for the lookup and never stored.
+          <a href="https://db-ip.com" target="_blank" rel="noopener">IP Geolocation by DB-IP</a>.</p>
+      </div>
+    </section>`;
+
+  const form = $('#address-form');
+  const input = $('#public-url');
+  const preview = () => {
+    const typed = input.value.trim().replace(/\/+$/, '');
+    const base = typed ? (/^https?:\/\//i.test(typed) ? typed : `https://${typed}`) : location.origin;
+    $('#snippet-preview').textContent = snippet(example, base);
+  };
+  preview();
+  input.addEventListener('input', preview);
+  $('#use-current')?.addEventListener('click', () => { input.value = location.origin; preview(); input.focus(); });
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const err = form.querySelector('.error');
+    err.hidden = true;
+    try {
+      state.settings = await api('/api/settings', { method: 'PUT', body: { publicUrl: input.value } });
+      input.value = state.settings.publicUrl;
+      preview();
+      $('#saved').textContent = state.settings.publicUrl ? 'Saved' : 'Saved: snippets will use the dashboard address';
+    } catch (ex) {
+      err.textContent = ex.message;
+      err.hidden = false;
+    }
+  });
+}
+
 // ---------- Auth ----------
 function renderAuth(needsSetup) {
   liveSource?.close();
@@ -804,7 +920,7 @@ async function boot() {
   const { user, needsSetup } = await api('/api/auth');
   if (!user) return renderAuth(needsSetup);
   state.user = user;
-  state.sites = await api('/api/sites');
+  [state.sites, state.settings] = await Promise.all([api('/api/sites'), api('/api/settings')]);
   if (!state.sites.some(s => s.id === state.siteId)) state.siteId = state.sites[0]?.id ?? null;
   connectLive();
   render();

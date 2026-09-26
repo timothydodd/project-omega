@@ -17,6 +17,8 @@
   --area: #eaf2fc;   /* accent at ~10% on the surface, pre-mixed so fills stay opaque */
   --live: #0ca30c;
   --live-wash: #e3f6e3;
+  --warn-wash: #fdf0d5;
+  --warn-ink: #7a4f00;
   --up: #006300;
   --down: #c03030;
   --danger: #c03030;
@@ -45,6 +47,8 @@
     --area: #182a40;
     --live: #0ca30c;
     --live-wash: #13301a;
+    --warn-wash: #3a2c0c;
+    --warn-ink: #f5c86b;
     --up: #2fbf4a;
     --down: #e66767;
     --danger: #e66767;
@@ -246,6 +250,12 @@ main { min-width: 0; padding: 24px 32px 64px; max-width: 1320px; }
 }
 .tag { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line); font-size: 12px; color: var(--ink-2); }
 .tag.id { background: var(--accent-wash); border-color: transparent; color: var(--accent-ink); }
+.tag.bot { background: var(--warn-wash); border-color: transparent; color: var(--warn-ink); }
+.reasons { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.notice {
+  margin: -4px 0 16px; padding: 12px 14px; border-radius: var(--radius-s);
+  background: var(--accent-wash); color: var(--ink); font-size: 13.5px;
+}
 
 /* ---------- Live ---------- */
 .live-head { display: flex; align-items: center; gap: 16px; padding: 22px 24px; }

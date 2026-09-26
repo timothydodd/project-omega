@@ -69,3 +69,52 @@ func TestPasswordHash(t *testing.T) {
 		t.Error("password verification")
 	}
 }
+
+func TestBotScore(t *testing.T) {
+	// A data-centre visit that never interacts is a bot; a VPN user who scrolls is not.
+	dc := sigDataCenter.bit | sigNoInteraction.bit
+	if s := botScore(dc, false); s < botThreshold {
+		t.Errorf("data centre, no interaction: score %d, want >= %d", s, botThreshold)
+	}
+	if s := botScore(sigDataCenter.bit, true); s >= botThreshold {
+		t.Errorf("data centre with interaction: score %d, want < %d", s, botThreshold)
+	}
+	// One weak signal on its own (e.g. a reader who never scrolls) is not enough.
+	if s := botScore(sigNoInteraction.bit|sigNoAcceptLanguage.bit, false); s >= botThreshold {
+		t.Errorf("weak signals: score %d, want < %d", s, botThreshold)
+	}
+	if !fastNavigation(5, 0, 5_000) || fastNavigation(5, 0, 60_000) || fastNavigation(2, 0, 100) {
+		t.Error("fastNavigation")
+	}
+}
+
+func TestIsDataCenter(t *testing.T) {
+	for org, want := range map[string]bool{
+		"Amazon.com, Inc.": true, "DigitalOcean, LLC": true, "Hetzner Online GmbH": true, "Microsoft Corporation": true,
+		"Comcast Cable Communications, LLC": false, "Deutsche Telekom AG": false,
+		"Akamai Technologies, Inc.": false, "Cloudflare, Inc.": false, "": false, // iCloud Private Relay / WARP exits
+	} {
+		if got := isDataCenter(org); got != want {
+			t.Errorf("isDataCenter(%q) = %v, want %v", org, got, want)
+		}
+	}
+}
+
+func TestNormalizePublicURL(t *testing.T) {
+	for in, want := range map[string]string{
+		"analytics.example.com":          "https://analytics.example.com",
+		"https://Analytics.Example.com/": "https://analytics.example.com",
+		"http://localhost:3300":          "http://localhost:3300",
+		"https://example.com/omega/":     "https://example.com/omega",
+		"":                               "",
+	} {
+		if got, err := normalizePublicURL(in); err != nil || got != want {
+			t.Errorf("normalizePublicURL(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{"ftp://example.com", "https://example.com/?x=1", "https://user@example.com", "https://"} {
+		if _, err := normalizePublicURL(bad); err == nil {
+			t.Errorf("normalizePublicURL(%q) should fail", bad)
+		}
+	}
+}
