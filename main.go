@@ -95,13 +95,8 @@ func routes() http.Handler {
 	})
 
 	// ---- Public: tracker + ingest (called cross-origin from tracked sites) ----
-	mux.HandleFunc("GET /t.js", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Cache-Control", "public, max-age=3600")
-		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-		b, _ := assets.ReadFile("tracker/t.js")
-		w.Write(b)
-	})
+	tracker := loadTracker()
+	mux.HandleFunc("GET /t.js", tracker.serve)
 	mux.HandleFunc("POST /api/collect", handleCollect)
 	mux.HandleFunc("OPTIONS /api/collect", handleCollect)
 	serveDemo := func(w http.ResponseWriter, r *http.Request) { serveAsset(w, public, "demo.html") }

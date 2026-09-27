@@ -1,4 +1,4 @@
-/*!
+/*
  * Omega Analytics tracker.
  * <script defer src="https://YOUR-OMEGA-HOST/t.js" data-site="site_xxx"></script>
  *

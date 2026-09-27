@@ -52,6 +52,7 @@ Open the dashboard. The first visit asks you to create the admin account, then a
 | `OMEGA_PUBLIC_URL` | *(set in Settings)* | Public address used in tracking snippets, e.g. `https://analytics.example.com`. Overrides the Settings page. |
 | `OMEGA_GEOIP_DB` / `OMEGA_ASN_DB` | *(none)* | A bundled country / network database to use until a newer one is downloaded |
 | `OMEGA_IP_DB_UPDATE` | `on` | Set to `off` to stop the monthly automatic download |
+| `OMEGA_TRACKER_MINIFY` | `on` for release builds, `off` for local `dev` builds | Serve `t.js` minified (`on`) or as readable source (`off`) |
 
 To try the tracker locally, open `http://localhost:3300/demo?site=<site key>` (add `&cookies=consent` or `&cookies=always` to test those modes). The site's domains must include `localhost`.
 
@@ -132,7 +133,7 @@ Some choices are deliberate:
 ## How it works
 
 ```
-tracker/t.js   ~2.5 KB gzipped: page views (incl. SPA routes), 15s heartbeat, events, optional cookies
+tracker/t.js   readable source; served minified + gzipped (~2.2 KB) with an ETag by release builds (tracker.go)
 collect.go     ingest: site key + domain check, bot filter, cookie or cookieless identity, sessions
 identity.go    daily salt, visitor IP (proxy-aware), cookieless visitor hash
 live.go        in-memory presence + Server-Sent Events to open dashboards

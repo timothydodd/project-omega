@@ -4,6 +4,7 @@ go 1.26
 
 require (
 	github.com/oschwald/maxminddb-golang/v2 v2.6.0
+	github.com/tdewolff/minify/v2 v2.24.17
 	modernc.org/sqlite v1.59.0
 )
 
@@ -13,6 +14,7 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	github.com/tdewolff/parse/v2 v2.8.16 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	modernc.org/libc v1.75.7 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

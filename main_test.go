@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"slices"
 	"testing"
 )
@@ -115,6 +116,26 @@ func TestNormalizePublicURL(t *testing.T) {
 	for _, bad := range []string{"ftp://example.com", "https://example.com/?x=1", "https://user@example.com", "https://"} {
 		if _, err := normalizePublicURL(bad); err == nil {
 			t.Errorf("normalizePublicURL(%q) should fail", bad)
+		}
+	}
+}
+
+func TestMinifiedTracker(t *testing.T) {
+	src, err := assets.ReadFile("tracker/t.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := minifyJS(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) > len(src)*6/10 {
+		t.Errorf("minified tracker is %d bytes from %d; expected at least 40%% off", len(out), len(src))
+	}
+	// Public API and payload keys must survive minification.
+	for _, s := range []string{"omega", "track", "identify", "consent", "data-site", "sendBeacon", "/api/collect"} {
+		if !bytes.Contains(out, []byte(s)) {
+			t.Errorf("minified tracker lost %q", s)
 		}
 	}
 }
