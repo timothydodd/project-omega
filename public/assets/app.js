@@ -97,7 +97,7 @@ async function api(path, { method = 'GET', body } = {}) {
 const state = {
   user: null,
   sites: [],
-  siteId: Number(store.get('omega.site')) || null,
+  siteId: store.get('omega.site') === 'all' ? 'all' : Number(store.get('omega.site')) || null, // a site id, or 'all'
   range: store.get('omega.range') || '7d',
   metric: 'visitors',
   settings: { publicUrl: '' },
@@ -109,6 +109,20 @@ let viewCleanups = [];
 let renderToken = 0;
 
 function site() { return state.sites.find(s => s.id === state.siteId); }
+function allSites() { return state.siteId === 'all'; }
+function siteName(id) { return state.sites.find(s => s.id === id)?.name ?? 'Deleted site'; }
+/** Across all sites a path needs its site: "example.com/pricing", or the site's name when it has no domain. */
+function sitePath(id, path) {
+  const s = state.sites.find(x => x.id === id);
+  return s?.domains[0] ? `${s.domains[0]}${path}` : `${s?.name ?? 'Deleted site'} ${path}`;
+}
+/** Switch the dashboard to a site (or 'all') and go to hash. */
+function selectSite(id, hash) {
+  state.siteId = id;
+  store.set('omega.site', id);
+  connectLive();
+  if (location.hash === hash) render(); else location.hash = hash;
+}
 
 function connectLive() {
   liveSource?.close();
@@ -161,7 +175,7 @@ function renderShell(view) {
         ${state.sites.length ? `
         <div class="site-picker">
           <label class="sr-only" for="site-select">Site</label>
-          <select id="site-select">${state.sites.map(s => `<option value="${s.id}" ${s.id === state.siteId ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select>
+          <select id="site-select">${state.sites.length > 1 ? `<option value="all" ${allSites() ? 'selected' : ''}>All sites</option>` : ''}${state.sites.map(s => `<option value="${s.id}" ${s.id === state.siteId ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select>
         </div>` : ''}
         <nav class="nav" aria-label="Main">
           ${nav.map(([key, label]) => `
@@ -178,13 +192,9 @@ function renderShell(view) {
       <main id="main"></main>
     </div>`;
   $('#site-select')?.addEventListener('change', e => {
-    state.siteId = Number(e.target.value);
-    store.set('omega.site', state.siteId);
-    connectLive();
     const r = route();
     // Detail pages belong to the previous site, so go back to the list.
-    location.hash = `#/${r.parts[0] === 'sites' ? 'sites' : r.parts[0] || 'overview'}`;
-    render();
+    selectSite(e.target.value === 'all' ? 'all' : Number(e.target.value), `#/${r.parts[0] || 'overview'}`);
   });
   $('#sign-out').addEventListener('click', async () => {
     await api('/api/logout', { method: 'POST' }).catch(() => {});
@@ -283,12 +293,12 @@ async function overviewView(main, r, alive) {
     ? `<p class="footnote">Hiding ${fmtNum(d.botSessions)} ${d.botSessions === 1 ? 'session' : 'sessions'} in this period that ${d.botSessions === 1 ? 'looks' : 'look'} like ${d.botSessions === 1 ? 'a bot' : 'bots'}. <a href="${hrefWith({ bots: '1' })}">Include them</a></p>`
     : '';
   ov.innerHTML = `
-    ${noData ? `<div class="card card-body" style="margin-bottom:16px">No visits recorded yet. <a href="#/sites">Add the tracking script</a> to ${esc(site()?.name)}, then open a page on the site. You'll show up on the Live view within a few seconds.</div>` : ''}
+    ${noData ? `<div class="card card-body" style="margin-bottom:16px">No visits recorded yet. <a href="#/sites">Add the tracking script</a> to ${allSites() ? 'your sites' : esc(site()?.name)}, then open a page on the site. You'll show up on the Live view within a few seconds.</div>` : ''}
     <section class="windows" aria-label="Unique visitors">
       <div class="window live" role="link" tabindex="0" id="live-cell">
         <h3>Live now</h3>
         <div class="big num"><span class="pulse" aria-hidden="true"></span><span id="live-big">${fmtNum(state.live.count)}</span></div>
-        <div class="delta soft">Visitors on the site right now</div>
+        <div class="delta soft">Visitors on ${allSites() ? 'your sites' : 'the site'} right now</div>
       </div>
       ${d.windows.map(w => `
         <div class="window">
@@ -298,6 +308,7 @@ async function overviewView(main, r, alive) {
         </div>`).join('')}
     </section>
     ${botNote}
+    ${allSites() ? '<p class="footnote">Totals add up all your sites. Someone who visits two of your sites is counted once on each.</p>' : ''}
     ${d.windows.some(w => w.estimated) || d.kpis.visitorsEstimated ? `<p class="footnote">≈ Includes cookieless visitors, who are recognised for one day at a time. Someone who comes back on several days is counted once per day, so multi-day totals run high.</p>` : ''}
     <section class="card" aria-label="Trend">
       <div class="metrics" role="tablist">
@@ -346,15 +357,27 @@ async function overviewView(main, r, alive) {
   liveCell.addEventListener('keydown', e => { if (e.key === 'Enter') location.hash = '#/live'; });
   onLive(l => { const n = $('#live-big'); if (n) n.textContent = fmtNum(l.count); });
 
-  const filterPath = row => { location.hash = hrefWith({ path: row.name }); };
+  // Across all sites, a page belongs to one site: open that site filtered to the page.
+  const filterPath = row => allSites()
+    ? selectSite(row.site, `#/overview?path=${encodeURIComponent(row.name)}`)
+    : (location.hash = hrefWith({ path: row.name }));
+  const pageName = allSites() ? r => sitePath(r.site, r.name) : undefined;
+  const pageTitle = allSites() ? r => `Open ${sitePath(r.site, r.name)}` : undefined;
   const filterSource = row => { location.hash = hrefWith({ source: row.name }); };
   const visitorsCol = { key: 'visitors', label: 'Visitors', fmt: fmtNum };
   const panels = $('#panels');
+  if (d.sites) {
+    panels.append(breakdownPanel('Sites', [{
+      label: 'Sites', rows: d.sites.map(x => ({ ...x, name: siteName(x.site) })), nameLabel: 'Site',
+      cols: [visitorsCol, { key: 'sessions', label: 'Sessions', fmt: fmtNum }],
+      onClick: row => selectSite(row.site, hrefWith({})), rowTitle: row => `Open ${row.name}`,
+    }]));
+  }
   panels.append(
     breakdownPanel('Pages', [
-      { label: 'Top pages', rows: d.pages, nameLabel: 'Page', cols: [visitorsCol, { key: 'pageviews', label: 'Views', fmt: fmtNum }, { key: 'avg_time', label: 'Time on page', fmt: fmtDur }], onClick: filterPath },
-      { label: 'Entry', rows: d.entryPages, nameLabel: 'Landing page', cols: [visitorsCol, { key: 'sessions', label: 'Entrances', fmt: fmtNum }], onClick: filterPath },
-      { label: 'Exit', rows: d.exitPages, nameLabel: 'Exit page', cols: [visitorsCol, { key: 'sessions', label: 'Exits', fmt: fmtNum }], onClick: filterPath },
+      { label: 'Top pages', rows: d.pages, nameLabel: 'Page', cols: [visitorsCol, { key: 'pageviews', label: 'Views', fmt: fmtNum }, { key: 'avg_time', label: 'Time on page', fmt: fmtDur }], onClick: filterPath, display: pageName, rowTitle: pageTitle },
+      { label: 'Entry', rows: d.entryPages, nameLabel: 'Landing page', cols: [visitorsCol, { key: 'sessions', label: 'Entrances', fmt: fmtNum }], onClick: filterPath, display: pageName, rowTitle: pageTitle },
+      { label: 'Exit', rows: d.exitPages, nameLabel: 'Exit page', cols: [visitorsCol, { key: 'sessions', label: 'Exits', fmt: fmtNum }], onClick: filterPath, display: pageName, rowTitle: pageTitle },
     ]),
     breakdownPanel('Where visitors came from', [
       { label: 'Sources', rows: d.sources, nameLabel: 'Source', cols: [visitorsCol, { key: 'sessions', label: 'Sessions', fmt: fmtNum }], onClick: filterSource },
@@ -401,7 +424,7 @@ function breakdownPanel(title, tabs) {
           <table class="bars">
             <thead><tr><th>${esc(t.nameLabel)}</th>${t.cols.map(c => `<th class="r">${esc(c.label)}</th>`).join('')}</tr></thead>
             <tbody>${rows.map((r, i) => `
-              <tr ${t.onClick ? `class="clickable" tabindex="0" data-row="${i}" title="Filter by ${esc(r.name)}"` : ''}>
+              <tr ${t.onClick ? `class="clickable" tabindex="0" data-row="${i}" title="${esc(t.rowTitle ? t.rowTitle(r) : `Filter by ${r.name}`)}"` : ''}>
                 <td class="name"><span class="fill" style="width:${(r[metric] / max) * 100}%"></span><span class="label">${esc(t.display ? t.display(r) : r.name)}</span></td>
                 ${t.cols.map(c => `<td class="r num">${c.fmt(r[c.key])}</td>`).join('')}
               </tr>`).join('')}
@@ -431,16 +454,17 @@ async function liveView(main) {
     const now = Date.now();
     const pages = new Map();
     for (const v of l.visitors) {
-      const p = pages.get(v.path) ?? { path: v.path, title: v.title, count: 0 };
+      const key = allSites() ? sitePath(v.siteId, v.path) : v.path;
+      const p = pages.get(key) ?? { path: key, title: v.title, count: 0 };
       p.count++;
-      pages.set(v.path, p);
+      pages.set(key, p);
     }
     const byPage = [...pages.values()].sort((a, b) => b.count - a.count);
     $('#live').innerHTML = `
       <section class="card live-head" aria-live="polite">
         <span class="pulse" aria-hidden="true"></span>
         <div><div class="big num">${fmtNum(l.count)}</div></div>
-        <div><div>${l.count === 1 ? 'person' : 'people'} on ${esc(site()?.name)} right now</div><div class="muted">Anyone active in the last minute. Updates every few seconds.${l.bots ? ` Not counting ${l.bots} likely ${l.bots === 1 ? 'bot' : 'bots'}.` : ''}</div></div>
+        <div><div>${l.count === 1 ? 'person' : 'people'} on ${allSites() ? 'your sites' : esc(site()?.name)} right now</div><div class="muted">Anyone active in the last minute. Updates every few seconds.${l.bots ? ` Not counting ${l.bots} likely ${l.bots === 1 ? 'bot' : 'bots'}.` : ''}</div></div>
       </section>
       <div class="live-grid" style="margin-top:16px">
         <section class="card">
@@ -451,17 +475,18 @@ async function liveView(main) {
                 <div class="path" title="${esc(p.title || '')}">${esc(p.path)}</div>
                 <div class="num soft">${p.count}</div>
                 <div class="live-dots" aria-hidden="true">${'<span></span>'.repeat(Math.min(p.count, 40))}</div>
-              </div>`).join('')}</div>` : '<div class="empty">Nobody is on the site right now.</div>'}
+              </div>`).join('')}</div>` : `<div class="empty">Nobody is on ${allSites() ? 'your sites' : 'the site'} right now.</div>`}
           </div>
         </section>
         <section class="card">
           <div class="card-head"><h2>Visitors</h2></div>
           <div class="card-body" style="padding:8px 0 0">
             ${l.visitors.length ? `<div class="table-wrap"><table class="table">
-              <thead><tr><th>Visitor</th><th>Current page</th><th>On page</th><th>Came from</th><th>Country</th><th>Device</th><th>Visit so far</th></tr></thead>
+              <thead><tr><th>Visitor</th>${allSites() ? '<th>Site</th>' : ''}<th>Current page</th><th>On page</th><th>Came from</th><th>Country</th><th>Device</th><th>Visit so far</th></tr></thead>
               <tbody>${l.visitors.map(v => `
                 <tr data-href="#/sessions/${esc(v.sessionId)}" tabindex="0">
                   <td>${person(v.userName ? { name: v.userName } : null, v.userId, v.visitorId)}</td>
+                  ${allSites() ? `<td>${esc(siteName(v.siteId))}</td>` : ''}
                   <td><div class="path">${esc(v.path)}</div>${v.title ? `<div class="sub">${esc(v.title)}</div>` : ''}</td>
                   <td class="num">${fmtDur(now - v.pageStartedAt)}</td>
                   <td>${esc(v.source)}</td>
@@ -485,6 +510,7 @@ function sessionRows(sessions, { showVisitor = true } = {}) {
   return sessions.map(s => `
     <tr data-href="#/sessions/${esc(s.id)}" tabindex="0">
       ${showVisitor ? `<td>${person(s.traits, s.user_id, s.visitor_id, s.bot ? '<span class="tag bot">Likely bot</span>' : '')}</td>` : ''}
+      ${showVisitor && allSites() ? `<td>${esc(siteName(s.site_id))}</td>` : ''}
       <td>${esc(s.source)}${s.utm_campaign ? `<div class="sub">${esc(s.utm_campaign)}</div>` : ''}</td>
       <td><div class="path">${esc(s.entry_path)}</div>${s.pageviews > 1 ? `<div class="sub">then ${s.pageviews - 1} more ${s.pageviews === 2 ? 'page' : 'pages'}, left from ${esc(s.exit_path)}</div>` : '<div class="sub">Single page</div>'}</td>
       <td class="num">${fmtDur(s.last_seen - s.started_at)}</td>
@@ -509,7 +535,7 @@ async function sessionsView(main, r, alive) {
   const draw = (hasMore) => {
     card.innerHTML = rows.length ? `
       <div class="table-wrap"><table class="table">
-        <thead><tr><th>Visitor</th><th>Came from</th><th>Pages</th><th>Duration</th><th>Device</th><th>Country</th><th>Started</th></tr></thead>
+        <thead><tr><th>Visitor</th>${allSites() ? '<th>Site</th>' : ''}<th>Came from</th><th>Pages</th><th>Duration</th><th>Device</th><th>Country</th><th>Started</th></tr></thead>
         <tbody>${sessionRows(rows)}</tbody>
       </table></div>
       ${hasMore ? '<div class="card-body"><button type="button" class="btn small" id="more">Load older sessions</button></div>' : ''}`
@@ -562,6 +588,7 @@ async function sessionDetailView(main, id, alive) {
         <div class="card-head"><h2>Details</h2></div>
         <div class="card-body">
           <dl class="facts" style="grid-template-columns:1fr 1fr">
+            ${allSites() ? `<div style="grid-column:1/-1"><dt>Site</dt><dd>${esc(siteName(s.site_id))}</dd></div>` : ''}
             <div style="grid-column:1/-1"><dt>Visitor</dt><dd><a href="#/visitors/${esc(s.visitor_id)}">${esc(name)}</a>${s.user_id ? ` <span class="tag id">${esc(s.user_id)}</span>` : ''}</dd></div>
             <div><dt>Visit</dt><dd>${ordinal(s.visit_number)}</dd></div>
             <div><dt>First seen</dt><dd>${fmtDate(s.visitor_first_seen)}</dd></div>
@@ -610,10 +637,11 @@ async function visitorsView(main, r, alive) {
   const draw = hasMore => {
     card.innerHTML = rows.length ? `
       <div class="table-wrap"><table class="table">
-        <thead><tr><th>Visitor</th><th>Sessions</th><th>Page views</th><th>First came from</th><th>Last device</th><th>Country</th><th>Last seen</th><th>First seen</th></tr></thead>
+        <thead><tr><th>Visitor</th>${allSites() ? '<th>Site</th>' : ''}<th>Sessions</th><th>Page views</th><th>First came from</th><th>Last device</th><th>Country</th><th>Last seen</th><th>First seen</th></tr></thead>
         <tbody>${rows.map(v => `
           <tr data-href="#/visitors/${esc(v.id)}" tabindex="0">
             <td>${person(v.traits, v.user_id, v.id, v.user_id ? `<span class="tag id">${esc(v.user_id)}</span>` : v.cookieless ? '<span class="tag" title="Recognised for one day only. Visits on other days appear as different visitors.">Cookieless</span>' : '')}</td>
+            ${allSites() ? `<td>${esc(siteName(v.site_id))}</td>` : ''}
             <td class="num">${fmtNum(v.sessions)}</td>
             <td class="num">${fmtNum(v.pageviews ?? 0)}</td>
             <td>${esc(v.first_source ?? '')}</td>
@@ -646,6 +674,7 @@ async function visitorDetailView(main, id, alive) {
     ${pageHead(name, liveNow ? '<span class="chip"><span class="pulse" aria-hidden="true" style="width:8px;height:8px"></span>On the site now</span>' : '', '<a class="crumb" href="#/visitors">Visitors /</a>')}
     <section class="card card-body" style="margin-bottom:16px">
       <dl class="facts">
+        ${allSites() ? `<div><dt>Site</dt><dd>${esc(siteName(v.site_id))}</dd></div>` : ''}
         <div><dt>User ID</dt><dd>${v.user_id ? esc(v.user_id) : '<span class="muted">Not identified</span>'}</dd></div>
         ${traits.map(([k, val]) => `<div><dt>${esc(k)}</dt><dd>${esc(typeof val === 'object' ? JSON.stringify(val) : val)}</dd></div>`).join('')}
         <div><dt>Sessions</dt><dd class="num">${fmtNum(totals.sessions)}</dd></div>
@@ -802,7 +831,7 @@ localStorage.setItem('omega_ignore', '1');</pre>
     if (!confirm(`Delete ${s.name} and all of its analytics data? This can't be undone.`)) return;
     await api(`/api/sites/${s.id}`, { method: 'DELETE' });
     state.sites = state.sites.filter(x => x.id !== s.id);
-    if (state.siteId === s.id) { state.siteId = state.sites[0]?.id ?? null; store.set('omega.site', state.siteId ?? ''); connectLive(); }
+    if (state.siteId === s.id || (allSites() && state.sites.length < 2)) { state.siteId = state.sites[0]?.id ?? null; store.set('omega.site', state.siteId ?? ''); connectLive(); }
     render();
   }));
 }
@@ -950,7 +979,8 @@ async function boot() {
   if (!user) return renderAuth(needsSetup);
   state.user = user;
   [state.sites, state.settings] = await Promise.all([api('/api/sites'), api('/api/settings')]);
-  if (!state.sites.some(s => s.id === state.siteId)) state.siteId = state.sites[0]?.id ?? null;
+  const valid = allSites() ? state.sites.length > 1 : state.sites.some(s => s.id === state.siteId);
+  if (!valid) state.siteId = state.sites[0]?.id ?? null;
   connectLive();
   render();
 }

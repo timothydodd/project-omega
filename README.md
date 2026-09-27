@@ -3,7 +3,7 @@
 Lightweight, self-hosted, first-party web analytics. **One ~11 MB Go binary, one SQLite file, ~20 MB of RAM.** The dashboard and tracker are embedded in the binary.
 
 - **Cookieless by default**: no consent banner needed. Cookies can be switched on per site, after consent or always.
-- **Multiple sites**: each site has its own tracking key, allowed domains and privacy mode.
+- **Multiple sites**: each site has its own tracking key, allowed domains and privacy mode. Pick **All sites** in the site menu to see every site combined, with a per-site breakdown.
 - **Live view**: who is on the site right now, which page they're on, where they came from.
 - **Unique visitors**: rolling 24 hours, 3 days, 7 days and 30 days, each compared with the period before.
 - **Traffic**: page views, sessions, bounce rate, visit length, top/entry/exit pages, sources, referrers, UTM campaigns, devices, browsers, OS, countries.
