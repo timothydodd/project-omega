@@ -13,7 +13,11 @@ import (
 // A visitor counts as live if we heard from their tab within this window. The tracker pings every 15s.
 const liveWindow = 60 * time.Second
 
+// allSitesKey is the presence key for dashboards watching every site. Site ids start at 1.
+const allSitesKey = 0
+
 type LiveVisitor struct {
+	SiteID        int64   `json:"siteId"`
 	SessionID     string  `json:"sessionId"`
 	VisitorID     string  `json:"visitorId"`
 	UserID        *string `json:"userId"`
@@ -63,6 +67,7 @@ func (p *presence) site(id int64) map[string]*LiveVisitor {
 func (p *presence) touch(siteID int64, v LiveVisitor) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	v.SiteID = siteID
 	m := p.site(siteID)
 	if prev := m[v.SessionID]; prev != nil && prev.Path == v.Path {
 		v.PageStartedAt = prev.PageStartedAt
@@ -135,14 +140,23 @@ func (p *presence) snapshotLocked(siteID int64) LiveSnapshot {
 	now := time.Now().UnixMilli()
 	out := []LiveVisitor{}
 	bots := 0
-	for _, v := range p.bySite[siteID] {
-		switch {
-		case now-v.LastSeen >= liveWindow.Milliseconds():
-		case v.Bot:
-			bots++
-		default:
-			out = append(out, *v)
+	add := func(m map[string]*LiveVisitor) {
+		for _, v := range m {
+			switch {
+			case now-v.LastSeen >= liveWindow.Milliseconds():
+			case v.Bot:
+				bots++
+			default:
+				out = append(out, *v)
+			}
 		}
+	}
+	if siteID == allSitesKey {
+		for _, m := range p.bySite {
+			add(m)
+		}
+	} else {
+		add(p.bySite[siteID])
 	}
 	slices.SortFunc(out, func(a, b LiveVisitor) int { return cmp.Compare(b.LastSeen, a.LastSeen) })
 	return LiveSnapshot{Now: now, Count: len(out), Bots: bots, Visitors: out}
@@ -207,8 +221,10 @@ func (p *presence) run() {
 		}
 		// Refresh at least every 10s so "time on page" counters stay honest.
 		periodic := ms%10_000 < 2_000
+		anyDirty := len(p.dirty) > 0
 		for siteID, subs := range p.subs {
-			if len(subs) == 0 || (!p.dirty[siteID] && !periodic) {
+			dirty := p.dirty[siteID] || (siteID == allSitesKey && anyDirty)
+			if len(subs) == 0 || (!dirty && !periodic) {
 				continue
 			}
 			msg, _ := json.Marshal(p.snapshotLocked(siteID))

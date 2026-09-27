@@ -231,11 +231,11 @@ func routes() http.Handler {
 		writeJSON(w, 200, settingsResponse())
 	})
 
-	api("GET /api/stats", withSite(func(w http.ResponseWriter, r *http.Request, s Site) {
+	api("GET /api/stats", withScope(func(w http.ResponseWriter, r *http.Request, sc siteScope) {
 		q := r.URL.Query()
 		tz, _ := strconv.ParseInt(q.Get("tz"), 10, 64)
 		out, err := overview(statsQuery{
-			SiteID: s.ID, Range: validRange(q.Get("range")), TzOffset: min(max(tz, -840), 840),
+			Sites: sc, Range: validRange(q.Get("range")), TzOffset: min(max(tz, -840), 840),
 			Path: q.Get("path"), Source: q.Get("source"), Country: q.Get("country"), Bots: q.Get("bots") == "1",
 		})
 		if out != nil {
@@ -243,33 +243,33 @@ func routes() http.Handler {
 		}
 		respond(w, out, err)
 	}))
-	api("GET /api/live", withSite(func(w http.ResponseWriter, r *http.Request, s Site) {
-		writeJSON(w, 200, live.snapshot(s.ID))
+	api("GET /api/live", withScope(func(w http.ResponseWriter, r *http.Request, sc siteScope) {
+		writeJSON(w, 200, live.snapshot(sc.liveKey()))
 	}))
-	api("GET /api/live/stream", withSite(func(w http.ResponseWriter, r *http.Request, s Site) {
-		live.serveStream(w, r, s.ID)
+	api("GET /api/live/stream", withScope(func(w http.ResponseWriter, r *http.Request, sc siteScope) {
+		live.serveStream(w, r, sc.liveKey())
 	}))
-	api("GET /api/sessions", withSite(func(w http.ResponseWriter, r *http.Request, s Site) {
+	api("GET /api/sessions", withScope(func(w http.ResponseWriter, r *http.Request, sc siteScope) {
 		before, _ := strconv.ParseInt(r.URL.Query().Get("before"), 10, 64)
-		rows, err := listSessions(s.ID, before, r.URL.Query().Get("visitor"), r.URL.Query().Get("bots") == "1")
+		rows, err := listSessions(sc, before, r.URL.Query().Get("visitor"), r.URL.Query().Get("bots") == "1")
 		respond(w, rows, err)
 	}))
-	api("GET /api/sessions/{id}", withSite(func(w http.ResponseWriter, r *http.Request, s Site) {
-		detail, err := sessionDetail(s.ID, r.PathValue("id"))
+	api("GET /api/sessions/{id}", withScope(func(w http.ResponseWriter, r *http.Request, sc siteScope) {
+		detail, err := sessionDetail(sc, r.PathValue("id"))
 		if err == nil && detail == nil {
 			fail(w, 404, "Session not found")
 			return
 		}
 		respond(w, detail, err)
 	}))
-	api("GET /api/visitors", withSite(func(w http.ResponseWriter, r *http.Request, s Site) {
+	api("GET /api/visitors", withScope(func(w http.ResponseWriter, r *http.Request, sc siteScope) {
 		q := r.URL.Query()
 		before, _ := strconv.ParseInt(q.Get("before"), 10, 64)
-		rows, err := listVisitors(s.ID, before, q.Get("q"), q.Get("identified") == "1", q.Get("bots") == "1")
+		rows, err := listVisitors(sc, before, q.Get("q"), q.Get("identified") == "1", q.Get("bots") == "1")
 		respond(w, rows, err)
 	}))
-	api("GET /api/visitors/{id}", withSite(func(w http.ResponseWriter, r *http.Request, s Site) {
-		detail, err := visitorDetail(s.ID, r.PathValue("id"))
+	api("GET /api/visitors/{id}", withScope(func(w http.ResponseWriter, r *http.Request, sc siteScope) {
+		detail, err := visitorDetail(sc, r.PathValue("id"))
 		if err == nil && detail == nil {
 			fail(w, 404, "Visitor not found")
 			return
@@ -311,15 +311,29 @@ func handleCollect(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(202)
 }
 
-func withSite(h func(http.ResponseWriter, *http.Request, Site)) http.HandlerFunc {
+// withScope resolves ?site=<id>, or ?site=all for every site.
+func withScope(h func(http.ResponseWriter, *http.Request, siteScope)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("site") == "all" {
+			sites, err := listSites()
+			if err != nil {
+				serverError(w, err)
+				return
+			}
+			sc := siteScope{all: true}
+			for _, s := range sites {
+				sc.ids = append(sc.ids, s.ID)
+			}
+			h(w, r, sc)
+			return
+		}
 		id, _ := strconv.ParseInt(r.URL.Query().Get("site"), 10, 64)
 		s, ok := getSite(id)
 		if !ok {
 			fail(w, 404, "Site not found")
 			return
 		}
-		h(w, r, s)
+		h(w, r, siteScope{ids: []int64{s.ID}})
 	}
 }
 

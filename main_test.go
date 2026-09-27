@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 )
 
 // Route patterns that overlap panic at registration, so make sure the mux builds.
@@ -137,5 +139,67 @@ func TestMinifiedTracker(t *testing.T) {
 		if !bytes.Contains(out, []byte(s)) {
 			t.Errorf("minified tracker lost %q", s)
 		}
+	}
+}
+
+// "All sites" adds up every site, and keeps the same path on two sites apart.
+func TestAllSitesOverview(t *testing.T) {
+	if err := openDB(filepath.Join(t.TempDir(), "omega.db")); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	a, err := createSite("A", "a.test", "cookies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := createSite("B", "b.test", "cookies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UnixMilli()
+	for i, s := range []struct {
+		site    Site
+		id      string
+		visitor string
+	}{{a, "s1", "v1"}, {a, "s2", "v2"}, {b, "s3", "v3"}} {
+		ts := now - int64(i+1)*60_000
+		db.Exec(`INSERT INTO sessions (id, site_id, visitor_id, started_at, last_seen, entry_path, exit_path, pageviews, source)
+			VALUES (?, ?, ?, ?, ?, '/', '/', 1, 'Direct')`, s.id, s.site.ID, s.visitor, ts, ts)
+		db.Exec("INSERT INTO pageviews (id, site_id, session_id, visitor_id, ts, path) VALUES (?, ?, ?, ?, ?, '/')", s.id, s.site.ID, s.id, s.visitor, ts)
+		db.Exec("INSERT INTO visitors (site_id, id, first_seen, last_seen) VALUES (?, ?, ?, ?)", s.site.ID, s.visitor, ts, ts)
+	}
+
+	one, err := overview(statsQuery{Sites: siteScope{ids: []int64{a.ID}}, Range: "7d"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k := one["kpis"].(kpis); k.Sessions != 2 || k.Pageviews != 2 {
+		t.Errorf("site A: %+v", k)
+	}
+	if _, ok := one["sites"]; ok {
+		t.Error("a single site should not get a per-site breakdown")
+	}
+
+	all, err := overview(statsQuery{Sites: siteScope{ids: []int64{a.ID, b.ID}, all: true}, Range: "7d"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k := all["kpis"].(kpis); k.Sessions != 3 || k.Visitors != 3 || k.Pageviews != 3 {
+		t.Errorf("all sites: %+v", k)
+	}
+	if pages := all["pages"].([]Row); len(pages) != 2 {
+		t.Errorf("all sites: want / on each site as its own page, got %v", pages)
+	}
+	if sites := all["sites"].([]Row); len(sites) != 2 || i64(sites[0], "site") != a.ID || i64(sites[0], "visitors") != 2 {
+		t.Errorf("all sites: per-site breakdown %v", sites)
+	}
+
+	rows, err := listSessions(siteScope{ids: []int64{a.ID, b.ID}, all: true}, 0, "", false)
+	if err != nil || len(rows) != 3 {
+		t.Errorf("all-sites sessions: %d rows, %v", len(rows), err)
+	}
+	v, err := visitorDetail(siteScope{ids: []int64{a.ID, b.ID}, all: true}, "v3")
+	if err != nil || v == nil || i64(v["visitor"].(Row), "site_id") != b.ID {
+		t.Errorf("all-sites visitor detail: %v, %v", v, err)
 	}
 }

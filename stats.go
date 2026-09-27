@@ -16,7 +16,7 @@ const (
 var ranges = []string{"today", "24h", "3d", "7d", "30d", "90d"}
 
 type statsQuery struct {
-	SiteID   int64
+	Sites    siteScope
 	Range    string
 	TzOffset int64  // minutes east of UTC (e.g. -300 for US Eastern winter)
 	Path     string // only sessions that viewed this page
@@ -78,12 +78,14 @@ func (q statsQuery) filters(sql string, args []any) (string, []any) {
 
 // sessionScope matches sessions (alias `s`) active in [since, until).
 func (q statsQuery) sessionScope(since, until int64) (string, []any) {
-	return q.filters("s.site_id = ? AND s.last_seen >= ? AND s.started_at < ?", []any{q.SiteID, since, until})
+	w, args := q.Sites.where("s.site_id")
+	return q.filters(w+" AND s.last_seen >= ? AND s.started_at < ?", append(args, since, until))
 }
 
 // pageviewScope matches pageviews (alias `p`, joined to sessions `s`) in [since, until).
 func (q statsQuery) pageviewScope(since, until int64) (string, []any) {
-	return q.filters("p.site_id = ? AND p.ts >= ? AND p.ts < ?", []any{q.SiteID, since, until})
+	w, args := q.Sites.where("p.site_id")
+	return q.filters(w+" AND p.ts >= ? AND p.ts < ?", append(args, since, until))
 }
 
 func (q statsQuery) uniques(since, until int64) int64 {
@@ -190,12 +192,17 @@ func (q statsQuery) breakdowns(w window, out map[string]any) error {
 	const limit = 50
 	pw, pargs := q.pageviewScope(w.since, w.until)
 	sw, sargs := q.sessionScope(w.since, w.until)
+	// Across all sites, the same path on two sites is two different pages, so pages carry their site.
+	pageSite, pageGroup := "", ""
+	if q.Sites.all {
+		pageSite, pageGroup = "p.site_id site, ", "p.site_id, "
+	}
 	queries := map[string]struct {
 		sql  string
 		args []any
 	}{
-		"pages": {`SELECT p.path name, COUNT(DISTINCT p.visitor_id) visitors, COUNT(*) pageviews, CAST(AVG(p.duration) AS INTEGER) avg_time
-			FROM pageviews p JOIN sessions s ON s.id = p.session_id WHERE ` + pw + ` GROUP BY p.path ORDER BY visitors DESC, pageviews DESC`, pargs},
+		"pages": {`SELECT ` + pageSite + `p.path name, COUNT(DISTINCT p.visitor_id) visitors, COUNT(*) pageviews, CAST(AVG(p.duration) AS INTEGER) avg_time
+			FROM pageviews p JOIN sessions s ON s.id = p.session_id WHERE ` + pw + ` GROUP BY ` + pageGroup + `p.path ORDER BY visitors DESC, pageviews DESC`, pargs},
 		"referrers": {`SELECT s.referrer name, COUNT(DISTINCT s.visitor_id) visitors, COUNT(*) sessions
 			FROM sessions s WHERE ` + sw + ` AND s.referrer IS NOT NULL GROUP BY 1 ORDER BY visitors DESC`, sargs},
 		"campaigns": {`SELECT s.utm_campaign name, COUNT(DISTINCT s.visitor_id) visitors, COUNT(*) sessions
@@ -205,13 +212,25 @@ func (q statsQuery) breakdowns(w window, out map[string]any) error {
 		"sources": "s.source", "entryPages": "s.entry_path", "exitPages": "s.exit_path",
 		"devices": "s.device", "browsers": "s.browser", "os": "s.os", "countries": "s.country",
 	} {
+		sel, group := "coalesce("+col+", 'Unknown') name", "1"
+		if q.Sites.all && (key == "entryPages" || key == "exitPages") {
+			sel, group = "s.site_id site, "+sel, "1, 2"
+		}
 		queries[key] = struct {
 			sql  string
 			args []any
-		}{`SELECT coalesce(` + col + `, 'Unknown') name, COUNT(DISTINCT s.visitor_id) visitors, COUNT(*) sessions
+		}{`SELECT ` + sel + `, COUNT(DISTINCT s.visitor_id) visitors, COUNT(*) sessions
+			FROM sessions s WHERE ` + sw + ` GROUP BY ` + group + ` ORDER BY visitors DESC, sessions DESC`, sargs}
+	}
+	if q.Sites.all {
+		queries["sites"] = struct {
+			sql  string
+			args []any
+		}{`SELECT s.site_id site, COUNT(DISTINCT s.visitor_id) visitors, COUNT(*) sessions
 			FROM sessions s WHERE ` + sw + ` GROUP BY 1 ORDER BY visitors DESC, sessions DESC`, sargs}
 	}
-	ew, eargs := q.filters("e.site_id = ? AND e.ts >= ? AND e.ts < ?", []any{q.SiteID, w.since, w.until})
+	ew, eargs := q.Sites.where("e.site_id")
+	ew, eargs = q.filters(ew+" AND e.ts >= ? AND e.ts < ?", append(eargs, w.since, w.until))
 	queries["events"] = struct {
 		sql  string
 		args []any
@@ -285,9 +304,9 @@ func withJSON(r Row, cols ...string) Row {
 	return r
 }
 
-func listSessions(siteID int64, before int64, visitorID string, bots bool) ([]Row, error) {
-	where := []string{"s.site_id = ?"}
-	args := []any{siteID}
+func listSessions(sc siteScope, before int64, visitorID string, bots bool) ([]Row, error) {
+	w, args := sc.where("s.site_id")
+	where := []string{w}
 	if !bots {
 		where = append(where, "s.bot = 0")
 	}
@@ -306,11 +325,12 @@ func listSessions(siteID int64, before int64, visitorID string, bots bool) ([]Ro
 	return rows, err
 }
 
-func sessionDetail(siteID int64, id string) (map[string]any, error) {
+func sessionDetail(sc siteScope, id string) (map[string]any, error) {
+	w, args := sc.where("s.site_id")
 	s, err := rowOf(db, `SELECT s.*, v.user_id, v.traits, v.first_seen visitor_first_seen,
 		(SELECT COUNT(*) FROM sessions x WHERE x.site_id = s.site_id AND x.visitor_id = s.visitor_id AND x.started_at <= s.started_at) visit_number
 		FROM sessions s LEFT JOIN visitors v ON v.site_id = s.site_id AND v.id = s.visitor_id
-		WHERE s.site_id = ? AND s.id = ?`, siteID, id)
+		WHERE `+w+` AND s.id = ?`, append(args, id)...)
 	if err != nil || s == nil {
 		return nil, err
 	}
@@ -327,9 +347,9 @@ func sessionDetail(siteID int64, id string) (map[string]any, error) {
 	return map[string]any{"session": withJSON(s, "traits"), "pageviews": pageviews, "events": events}, err
 }
 
-func listVisitors(siteID int64, before int64, search string, identified, bots bool) ([]Row, error) {
-	where := []string{"v.site_id = ?"}
-	args := []any{siteID}
+func listVisitors(sc siteScope, before int64, search string, identified, bots bool) ([]Row, error) {
+	w, args := sc.where("v.site_id")
+	where := []string{w}
 	if !bots {
 		// Hide visitors whose every session looks like a bot.
 		where = append(where, "EXISTS (SELECT 1 FROM sessions b WHERE b.site_id = v.site_id AND b.visitor_id = v.id AND b.bot = 0)")
@@ -344,24 +364,30 @@ func listVisitors(siteID int64, before int64, search string, identified, bots bo
 		where = append(where, "(v.user_id LIKE ? OR v.traits LIKE ? OR v.id LIKE ?)")
 		args = append(args, "%"+search+"%", "%"+search+"%", search+"%")
 	}
+	// Pick the page of visitors first, then fill in their columns. Across several sites the sort can't use the
+	// (site_id, last_seen) index, and SQLite would otherwise run these subqueries for every visitor before sorting.
 	rows, err := rowsOf(db, `SELECT v.*,
 		(SELECT COUNT(*) FROM sessions s WHERE s.site_id = v.site_id AND s.visitor_id = v.id) sessions,
 		(SELECT SUM(pageviews) FROM sessions s WHERE s.site_id = v.site_id AND s.visitor_id = v.id) pageviews,
 		(SELECT source FROM sessions s WHERE s.site_id = v.site_id AND s.visitor_id = v.id ORDER BY started_at LIMIT 1) first_source,
 		(SELECT device || ' · ' || browser FROM sessions s WHERE s.site_id = v.site_id AND s.visitor_id = v.id ORDER BY started_at DESC LIMIT 1) last_device,
 		(SELECT country FROM sessions s WHERE s.site_id = v.site_id AND s.visitor_id = v.id ORDER BY started_at DESC LIMIT 1) last_country
-		FROM visitors v WHERE `+strings.Join(where, " AND ")+` ORDER BY v.last_seen DESC LIMIT 50`, args...)
+		FROM (SELECT * FROM visitors v WHERE `+strings.Join(where, " AND ")+` ORDER BY v.last_seen DESC LIMIT 50) v
+		ORDER BY v.last_seen DESC`, args...)
 	for _, r := range rows {
 		withJSON(r, "traits")
 	}
 	return rows, err
 }
 
-func visitorDetail(siteID int64, id string) (map[string]any, error) {
-	v, err := rowOf(db, "SELECT * FROM visitors WHERE site_id = ? AND id = ?", siteID, id)
+func visitorDetail(sc siteScope, id string) (map[string]any, error) {
+	w, args := sc.where("site_id")
+	v, err := rowOf(db, "SELECT * FROM visitors WHERE "+w+" AND id = ?", append(args, id)...)
 	if err != nil || v == nil {
 		return nil, err
 	}
+	// The rest is about this visitor's own site, even when the request covers every site.
+	siteID := i64(v, "site_id")
 	// An identified user may have several browsers (visitor ids); show them together.
 	devices := []Row{{"id": v["id"], "first_seen": v["first_seen"], "last_seen": v["last_seen"]}}
 	if uid := str(v, "user_id"); uid != "" {

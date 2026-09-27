@@ -149,3 +149,29 @@ func hostAllowed(s Site, hostname string) bool {
 	}
 	return false
 }
+
+// siteScope is the sites a dashboard request covers: one site, or every site ("All sites").
+type siteScope struct {
+	ids []int64
+	all bool
+}
+
+// where matches col against the scope's sites. Every index leads with site_id, so an IN list still uses them.
+func (sc siteScope) where(col string) (string, []any) {
+	if len(sc.ids) == 1 {
+		return col + " = ?", []any{sc.ids[0]}
+	}
+	args := make([]any, len(sc.ids))
+	for i, id := range sc.ids {
+		args[i] = id
+	}
+	return col + " IN (" + strings.TrimSuffix(strings.Repeat("?,", len(args)), ",") + ")", args
+}
+
+// liveKey is the scope's key in the live presence: the site's id, or allSitesKey.
+func (sc siteScope) liveKey() int64 {
+	if sc.all {
+		return allSitesKey
+	}
+	return sc.ids[0]
+}
