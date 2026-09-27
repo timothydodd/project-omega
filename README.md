@@ -163,27 +163,23 @@ docker run -p 3300:3300 -v omega-data:/data ghcr.io/timothydodd/project-omega:ma
 
 ## Deploying to k3s
 
-Manifests are in `deploy/k3s` (Kustomize): namespace, 2 Gi `local-path` volume, a single-replica Deployment, Service, and a Traefik Ingress.
+Manifests are in `deploy/k3s` (Kustomize): namespace, 2 Gi `local-path` volume, a single-replica Deployment, Service, and a Traefik Ingress. The image is public, so no pull secret is needed.
 
-1. **Pull secret.** The repo is private, so its image is too. Create a GitHub token with `read:packages`, then:
-   ```bash
-   kubectl create namespace omega
-   kubectl -n omega create secret docker-registry ghcr-pull \
-     --docker-server=ghcr.io --docker-username=timothydodd --docker-password=<token>
-   ```
-2. **Hostname.** Edit `deploy/k3s/ingress.yaml`: set your host, and uncomment the TLS lines if you use cert-manager.
-3. **Keep visitors' real IPs** (once per cluster). k3s's Traefik hides them by default, which would make every cookieless visitor look the same and break country lookup:
+Always apply with **`kubectl apply -k`**. `kubectl apply -f` skips the Kustomize settings, which puts everything in the `default` namespace and pulls `:latest` instead of the pinned tag.
+
+1. **Hostname.** Edit `deploy/k3s/ingress.yaml`: set your host, and uncomment the TLS lines if you use cert-manager.
+2. **Keep visitors' real IPs** (once per cluster). k3s's Traefik hides them by default, which would make every cookieless visitor look the same and break country lookup:
    ```bash
    kubectl apply -f deploy/k3s/traefik-client-ip.yaml
    ```
    You can skip this if the site sits behind Cloudflare, because Omega reads `CF-Connecting-IP`.
-4. **Deploy:**
+3. **Deploy:**
    ```bash
    kubectl apply -k deploy/k3s
    kubectl -n omega rollout status deploy/omega
    ```
-5. Open the hostname right away and create the admin account. The first visitor to an empty install becomes the admin.
-6. In **Settings**, set the analytics address to your public hostname so the site snippets point to it. Alternatively, uncomment `OMEGA_PUBLIC_URL` in `deployment.yaml`.
+4. Open the hostname right away and create the admin account. The first visitor to an empty install becomes the admin.
+5. In **Settings**, set the analytics address to your public hostname so the site snippets point to it. Alternatively, uncomment `OMEGA_PUBLIC_URL` in `deployment.yaml`.
 
 The pod needs outbound HTTPS to `download.db-ip.com` for the monthly country/network database updates. Without it, the copy bundled in the image is used.
 
@@ -191,7 +187,7 @@ The pod needs outbound HTTPS to `download.db-ip.com` for the monthly country/net
 ```bash
 kubectl -n omega rollout restart deploy/omega
 ```
-For pinned releases, set `newTag` in `deploy/k3s/kustomization.yaml` to a `sha-…` or version tag.
+For pinned releases, set `newTag` in `deploy/k3s/kustomization.yaml` to a version tag such as `0.1.1`.
 
 **Notes**
 - It runs one replica with the `Recreate` strategy on purpose: SQLite allows a single writer.

@@ -17,8 +17,6 @@ spec:
       labels:
         app.kubernetes.io/name: omega
     spec:
-      imagePullSecrets:
-        - name: ghcr-pull
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
