@@ -11,6 +11,7 @@ Lightweight, self-hosted, first-party web analytics. **One ~11 MB Go binary, one
 - **Users**: `omega.identify()` links visits to your own user ID.
 - **Custom events**: `omega.track()` or a `data-omega-event` attribute.
 - **Bot detection**: likely bots are scored, explained per session, and kept out of the numbers by default.
+- **Session replay** (off by default, per site): watch a visit back. Typed input is always masked, sessions can be sampled, and recordings are deleted after 7 days.
 
 ## Download
 
@@ -52,7 +53,9 @@ Open the dashboard. The first visit asks you to create the admin account, then a
 | `OMEGA_PUBLIC_URL` | *(set in Settings)* | Public address used in tracking snippets, e.g. `https://analytics.example.com`. Overrides the Settings page. |
 | `OMEGA_GEOIP_DB` / `OMEGA_ASN_DB` | *(none)* | A bundled country / network database to use until a newer one is downloaded |
 | `OMEGA_IP_DB_UPDATE` | `on` | Set to `off` to stop the monthly automatic download |
-| `OMEGA_TRACKER_MINIFY` | `on` for release builds, `off` for local `dev` builds | Serve `t.js` minified (`on`) or as readable source (`off`) |
+| `OMEGA_TRACKER_MINIFY` | `on` for release builds, `off` for local `dev` builds | Serve `t.js` and `replay.js` minified (`on`) or as readable source (`off`) |
+| `OMEGA_REPLAY_RETENTION_DAYS` | *(set in Settings, default 7)* | Days to keep session recordings. Overrides the Settings page. |
+| `OMEGA_REPLAY_MAX_MB` | `1024` | Total storage for session recordings; the oldest are deleted when it's reached |
 
 To try the tracker locally, open `http://localhost:3300/demo?site=<site key>` (add `&cookies=consent` or `&cookies=always` to test those modes). The site's domains must include `localhost`.
 
@@ -130,10 +133,41 @@ Some choices are deliberate:
 - CDN networks (Akamai, Cloudflare, Fastly) aren't treated as data centres, because iCloud Private Relay and Cloudflare WARP send real users through them.
 - Only the resulting signal bits and the network owner's name are stored, never IPs or fingerprints.
 
+## Session replay
+
+Turn it on per site in **Sites → Edit → Session replay**. Nothing changes in the snippet. When the server picks a session for recording, the tracker loads `/replay.js`, which is [rrweb](https://github.com/rrweb-io/rrweb)'s recorder (about 25 KB gzipped). Sites or sessions that aren't recorded never download it. Recorded sessions show **▶ Replay** in the Sessions list, and the session page has a player.
+
+**What's recorded.** Page structure, styles, scrolling, mouse movement, clicks and page changes, including single-page-app routes. Not recorded: canvas, fonts or media contents (images load from your site when played back). Each page load is its own recording, and the player plays them one after another.
+
+**Privacy.**
+- Everything typed into form fields is masked (`***`), always.
+- Add `data-omega-mask` to an element to mask its text as well. Add `data-omega-block` to leave it out entirely; it plays back as an empty box of the same size.
+- On **Cookies after consent** sites, recording starts only after `omega.consent(true)`. `omega.consent(false)` stops it.
+- Likely bots are never kept: if a session is later scored as a bot, its recording is deleted.
+- *Share of sessions to record* samples per session, so a session is recorded on every page or on none.
+
+**Storage.** Recordings are gzip-compressed chunks in the same SQLite file, usually 50–500 KB per recorded session. They're deleted after 7 days (change this in **Settings → Session replay** or with `OMEGA_REPLAY_RETENTION_DAYS`). If they reach `OMEGA_REPLAY_MAX_MB` (1 GB by default), the oldest go first. Analytics data is never deleted. On the 2 Gi k3s volume, lower the cap or the retention if you record busy sites.
+
+**Limits.**
+- Needs `CompressionStream` (Chrome 80+, Firefox 113+, Safari 16.4+). Older browsers are still counted but not recorded.
+- Events are sent every 5 seconds and when the tab is hidden, so the last few seconds before a tab closes can be missing.
+- A recording stops at 4 hours or 30 MB.
+
+**rrweb version.** The recorder and player are vendored, pinned at 2.1.6 (MIT, license alongside). To update, replace the files and drop the `sourceMappingURL` comments:
+
+```bash
+V=2.1.6
+curl -o tracker/vendor/rrweb-record.min.js https://cdn.jsdelivr.net/npm/@rrweb/record@$V/dist/record.umd.min.cjs
+curl -o public/assets/vendor/rrweb-player/rrweb-player.min.js https://cdn.jsdelivr.net/npm/rrweb-player@$V/dist/rrweb-player.umd.min.cjs
+curl -o public/assets/vendor/rrweb-player/style.min.css https://cdn.jsdelivr.net/npm/rrweb-player@$V/dist/style.min.css
+```
+
 ## How it works
 
 ```
-tracker/t.js   readable source; served minified + gzipped (~2.2 KB) with an ETag by release builds (tracker.go)
+tracker/t.js   readable source; served minified + gzipped (~2.5 KB) with an ETag by release builds (tracker.go)
+tracker/replay.js  session replay glue, served after the vendored rrweb recorder as /replay.js
+replay.go      session replay: who is recorded, chunk upload, playback, retention
 collect.go     ingest: site key + domain check, bot filter, cookie or cookieless identity, sessions
 identity.go    daily salt, visitor IP (proxy-aware), cookieless visitor hash
 live.go        in-memory presence + Server-Sent Events to open dashboards
@@ -205,7 +239,6 @@ Country comes from a CDN header when one is present (`CF-IPCountry`, `X-Vercel-I
 
 ## Not built yet
 
-- Session recording and replay (the plan is rrweb, stored as compressed chunks next to the database)
 - Funnels, goals and retention charts
 - Multiple dashboard users and per-site permissions
-- Data retention settings
+- Data retention settings for analytics data (session recordings already have one)

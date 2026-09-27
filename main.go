@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-//go:embed public tracker/t.js
+//go:embed public tracker/t.js tracker/replay.js tracker/vendor
 var assets embed.FS
 
 const maxBody = 32 << 10
@@ -57,6 +57,7 @@ func main() {
 
 	live.restore()
 	go live.run()
+	go runReplayRetention()
 
 	addr := env("HOST", "0.0.0.0") + ":" + env("PORT", "3300")
 	srv := &http.Server{
@@ -97,8 +98,11 @@ func routes() http.Handler {
 	// ---- Public: tracker + ingest (called cross-origin from tracked sites) ----
 	tracker := loadTracker()
 	mux.HandleFunc("GET /t.js", tracker.serve)
+	mux.HandleFunc("GET /replay.js", loadReplayScript().serve)
 	mux.HandleFunc("POST /api/collect", handleCollect)
 	mux.HandleFunc("OPTIONS /api/collect", handleCollect)
+	mux.HandleFunc("POST /api/replay", handleReplayUpload)
+	mux.HandleFunc("OPTIONS /api/replay", handleReplayUpload)
 	serveDemo := func(w http.ResponseWriter, r *http.Request) { serveAsset(w, public, "demo.html") }
 	mux.HandleFunc("GET /demo", serveDemo)
 	mux.HandleFunc("GET /demo/", serveDemo)
@@ -162,7 +166,7 @@ func routes() http.Handler {
 		respond(w, sites, err)
 	})
 	api("POST /api/sites", func(w http.ResponseWriter, r *http.Request) {
-		var body struct{ Name, Domains, Privacy string }
+		var body siteInput
 		if !readJSON(w, r, &body) {
 			return
 		}
@@ -170,7 +174,7 @@ func routes() http.Handler {
 			fail(w, 400, "Give the site a name.")
 			return
 		}
-		s, err := createSite(body.Name, body.Domains, body.Privacy)
+		s, err := createSite(body)
 		if err != nil {
 			serverError(w, err)
 			return
@@ -183,7 +187,7 @@ func routes() http.Handler {
 			fail(w, 404, "Site not found")
 			return
 		}
-		var body struct{ Name, Domains, Privacy string }
+		var body siteInput
 		if !readJSON(w, r, &body) {
 			return
 		}
@@ -191,7 +195,7 @@ func routes() http.Handler {
 			fail(w, 400, "Give the site a name.")
 			return
 		}
-		s, err := updateSite(id, body.Name, body.Domains, body.Privacy)
+		s, err := updateSite(id, body)
 		respond(w, s, err)
 	})
 	api("DELETE /api/sites/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -231,6 +235,27 @@ func routes() http.Handler {
 		writeJSON(w, 200, settingsResponse())
 	})
 
+	api("PUT /api/settings/replay", func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ RetentionDays int64 }
+		if !readJSON(w, r, &body) {
+			return
+		}
+		if _, fromEnv := replayRetentionDays(); fromEnv {
+			fail(w, 409, "Retention is set by the OMEGA_REPLAY_RETENTION_DAYS environment variable on the server. Change it there.")
+			return
+		}
+		if body.RetentionDays < 1 || body.RetentionDays > 365 {
+			fail(w, 400, "Keep recordings for 1 to 365 days.")
+			return
+		}
+		if err := setSetting("replay_retention_days", strconv.FormatInt(body.RetentionDays, 10)); err != nil {
+			serverError(w, err)
+			return
+		}
+		go purgeReplays(time.Now(), body.RetentionDays, replayMaxBytes())
+		writeJSON(w, 200, settingsResponse())
+	})
+
 	api("GET /api/stats", withScope(func(w http.ResponseWriter, r *http.Request, sc siteScope) {
 		q := r.URL.Query()
 		tz, _ := strconv.ParseInt(q.Get("tz"), 10, 64)
@@ -261,6 +286,13 @@ func routes() http.Handler {
 			return
 		}
 		respond(w, detail, err)
+	}))
+	api("GET /api/sessions/{id}/replays", withScope(func(w http.ResponseWriter, r *http.Request, sc siteScope) {
+		rows, err := listRecordings(sc, r.PathValue("id"))
+		respond(w, rows, err)
+	}))
+	api("GET /api/sessions/{id}/replays/{rid}", withScope(func(w http.ResponseWriter, r *http.Request, sc siteScope) {
+		serveRecording(w, r, sc, r.PathValue("id"), r.PathValue("rid"))
 	}))
 	api("GET /api/visitors", withScope(func(w http.ResponseWriter, r *http.Request, sc siteScope) {
 		q := r.URL.Query()
@@ -300,12 +332,18 @@ func handleCollect(w http.ResponseWriter, r *http.Request) {
 		fail(w, 413, "Payload too large")
 		return
 	}
-	if e := collect(r, body); e != nil {
+	record, e := collect(r, body)
+	if e != nil {
 		if e.status == 500 {
 			log.Printf("collect: %s", e.msg)
 			e.msg = "Server error"
 		}
 		fail(w, e.status, e.msg)
+		return
+	}
+	if record {
+		// The tracker reads this and loads the session replay recorder.
+		writeJSON(w, 200, map[string]int{"r": 1})
 		return
 	}
 	w.WriteHeader(202)

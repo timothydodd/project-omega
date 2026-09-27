@@ -9,6 +9,9 @@
  *   data-api="https://..."   where to send data (defaults to the script's origin)
  *   data-cookie-domain="example.com"  share the cookie across subdomains
  *
+ * Session replay (when switched on for the site in Omega): typed input is always masked. Add
+ * data-omega-mask to an element to mask its text too, or data-omega-block to leave it out of recordings.
+ *
  * API:
  *   omega.track('Signup', { plan: 'pro' })
  *   omega.identify('user-123', { email: 'a@b.com', name: 'Ada' })
@@ -23,7 +26,8 @@
   if (!key) return console.warn('[omega] Missing data-site attribute on the tracking script.');
   window.__omegaLoaded = true;
 
-  var api = (script.getAttribute('data-api') || new URL(script.src).origin).replace(/\/$/, '') + '/api/collect';
+  var base = (script.getAttribute('data-api') || new URL(script.src).origin).replace(/\/$/, '');
+  var api = base + '/api/collect';
   var cookieMode = script.getAttribute('data-cookies') || 'none'; // none | consent | always
   var cookieDomain = script.getAttribute('data-cookie-domain');
   var suffix = key.slice(-6);
@@ -94,6 +98,7 @@
       lastUrl = null;
       pageviewId = null;
       interacted = interactedSent = false; // the new session has to show its own interaction
+      replay.session++;
       pageview();
       if (payload.t === 'ping') return;
       payload.p = pageviewId;
@@ -109,9 +114,36 @@
     }
     lastHitAt = Date.now();
     var body = JSON.stringify(payload);
+    // The server answers these with {"r":1} when the session is being recorded for session replay.
+    if (payload.t === 'pageview' || payload.t === 'consent') {
+      try {
+        fetch(api, { method: 'POST', body: body, keepalive: true, mode: 'cors', credentials: 'omit' }).then(function (res) {
+          if (res.status === 202) return replayAnswer(false);
+          if (res.status === 200) return res.json().then(function (d) { replayAnswer(!!(d && d.r)); });
+        }).catch(function () {});
+        return;
+      } catch (e) {}
+    }
     // A string body is sent as text/plain, which avoids a CORS preflight.
     if (navigator.sendBeacon && navigator.sendBeacon(api, body)) return;
     try { fetch(api, { method: 'POST', body: body, keepalive: true, mode: 'cors', credentials: 'omit' }); } catch (e) {}
+  }
+
+  // ---- Session replay ----
+  // replay.js (rrweb's recorder) loads only when the server says this session is recorded, and it reads this
+  // object: which session this tab is on, the current page view, and whether to record at all.
+  var replay = { api: base + '/api/replay', key: key, session: 0, want: false, uid: uid, page: function () { return pageviewId; } };
+
+  function replayAnswer(on) {
+    replay.want = on;
+    if (replay.recorder) return replay.recorder.sync();
+    if (!on || replay.loading || !window.CompressionStream) return;
+    replay.loading = true;
+    window.__omegaReplay = replay;
+    var s = document.createElement('script');
+    s.src = script.src.replace(/t\.js(\?.*)?$/, 'replay.js');
+    s.async = true;
+    (document.head || document.documentElement).appendChild(s);
   }
 
   // ---- Bot checks ----
@@ -233,6 +265,7 @@
       } else {
         cookiesOn = false;
         visitorId = null;
+        replayAnswer(false);
         writeCookie(VISITOR_COOKIE, '', 0);
         writeCookie(SESSION_COOKIE, '', 0);
       }

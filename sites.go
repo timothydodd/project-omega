@@ -20,20 +20,32 @@ func toPrivacy(v string) string {
 }
 
 type Site struct {
-	ID        int64    `json:"id"`
-	Name      string   `json:"name"`
-	Domains   []string `json:"domains"`
-	Key       string   `json:"key"`
-	Privacy   string   `json:"privacy"`
-	CreatedAt int64    `json:"created_at"`
+	ID           int64    `json:"id"`
+	Name         string   `json:"name"`
+	Domains      []string `json:"domains"`
+	Key          string   `json:"key"`
+	Privacy      string   `json:"privacy"`
+	Replay       bool     `json:"replay"`       // record sessions (see replay.go)
+	ReplaySample int64    `json:"replaySample"` // percent of sessions to record, 1-100
+	CreatedAt    int64    `json:"created_at"`
 }
 
 func toSite(r Row) Site {
 	return Site{
 		ID: i64(r, "id"), Name: str(r, "name"), Domains: splitDomains(str(r, "domains")),
-		Key: str(r, "key"), Privacy: toPrivacy(str(r, "privacy")), CreatedAt: i64(r, "created_at"),
+		Key: str(r, "key"), Privacy: toPrivacy(str(r, "privacy")),
+		Replay: i64(r, "replay") == 1, ReplaySample: toSample(i64(r, "replay_sample")), CreatedAt: i64(r, "created_at"),
 	}
 }
+
+// siteInput is what the dashboard sends to create or edit a site.
+type siteInput struct {
+	Name, Domains, Privacy string
+	Replay                 bool
+	ReplaySample           int64
+}
+
+func toSample(v int64) int64 { return min(max(v, 1), 100) }
 
 var (
 	domainSep    = regexp.MustCompile(`[\s,]+`)
@@ -105,12 +117,13 @@ func getSite(id int64) (Site, bool) {
 	return toSite(r), true
 }
 
-func createSite(name, domains, privacy string) (Site, error) {
+func createSite(in siteInput) (Site, error) {
 	b := make([]byte, 9)
 	rand.Read(b)
 	key := "site_" + base64.RawURLEncoding.EncodeToString(b)
-	res, err := db.Exec("INSERT INTO sites (name, domains, key, privacy, created_at) VALUES (?, ?, ?, ?, ?)",
-		strings.TrimSpace(name), strings.Join(splitDomains(domains), ","), key, toPrivacy(privacy), time.Now().UnixMilli())
+	res, err := db.Exec("INSERT INTO sites (name, domains, key, privacy, replay, replay_sample, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		strings.TrimSpace(in.Name), strings.Join(splitDomains(in.Domains), ","), key, toPrivacy(in.Privacy),
+		in.Replay, toSample(in.ReplaySample), time.Now().UnixMilli())
 	if err != nil {
 		return Site{}, err
 	}
@@ -120,9 +133,10 @@ func createSite(name, domains, privacy string) (Site, error) {
 	return s, nil
 }
 
-func updateSite(id int64, name, domains, privacy string) (Site, error) {
-	if _, err := db.Exec("UPDATE sites SET name = ?, domains = ?, privacy = ? WHERE id = ?",
-		strings.TrimSpace(name), strings.Join(splitDomains(domains), ","), toPrivacy(privacy), id); err != nil {
+func updateSite(id int64, in siteInput) (Site, error) {
+	if _, err := db.Exec("UPDATE sites SET name = ?, domains = ?, privacy = ?, replay = ?, replay_sample = ? WHERE id = ?",
+		strings.TrimSpace(in.Name), strings.Join(splitDomains(in.Domains), ","), toPrivacy(in.Privacy),
+		in.Replay, toSample(in.ReplaySample), id); err != nil {
 		return Site{}, err
 	}
 	reloadSites()
