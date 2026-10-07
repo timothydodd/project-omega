@@ -24,7 +24,7 @@ func seed() error {
 	}
 	if site.ID == 0 {
 		// The demo data has returning visitors across days, which only cookie-based ids can see.
-		if site, err = createSite("Demo site", "localhost, 127.0.0.1", "consent"); err != nil {
+		if site, err = createSite(siteInput{Name: "Demo site", Domains: "localhost, 127.0.0.1", Privacy: "consent"}); err != nil {
 			return err
 		}
 	} else if r, _ := rowOf(db, "SELECT 1 x FROM sessions WHERE site_id = ? LIMIT 1", site.ID); r != nil {

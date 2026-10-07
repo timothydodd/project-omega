@@ -59,27 +59,28 @@ func jsonObject(raw json.RawMessage) any {
 	return string(raw)
 }
 
-func collect(r *http.Request, body []byte) *collectError {
+// collect stores a hit. record is true when the session should be recorded for session replay (see replay.go).
+func collect(r *http.Request, body []byte) (record bool, e *collectError) {
 	var hit Hit
 	if err := json.Unmarshal(body, &hit); err != nil {
-		return &collectError{400, "Invalid JSON"}
+		return false, &collectError{400, "Invalid JSON"}
 	}
 	site, ok := siteByKey(hit.K)
 	if !ok {
-		return &collectError{404, "Unknown site key"}
+		return false, &collectError{404, "Unknown site key"}
 	}
 	for name, v := range map[string]string{"v": hit.V, "s": hit.S, "p": hit.P, "pp": hit.PP} {
 		if v != "" && !idRE.MatchString(v) {
-			return &collectError{400, "Invalid " + name}
+			return false, &collectError{400, "Invalid " + name}
 		}
 	}
 	ua := r.UserAgent()
 	if isBot(ua) {
-		return nil
+		return false, nil
 	}
 	// The Origin header is set by the browser and can't be changed by page scripts, so check it when present.
 	if origin := refHost(r.Header.Get("Origin")); origin != "" && !hostAllowed(site, origin) {
-		return &collectError{403, "Domain not allowed for this site"}
+		return false, &collectError{403, "Domain not allowed for this site"}
 	}
 
 	now := time.Now()
@@ -87,15 +88,15 @@ func collect(r *http.Request, body []byte) *collectError {
 	case "pageview":
 		return pageview(site, &hit, r, ua, now)
 	case "ping", "leave":
-		return heartbeat(site, &hit, now)
+		return false, heartbeat(site, &hit, now)
 	case "event":
-		return event(site, &hit, now)
+		return false, event(site, &hit, now)
 	case "identify":
-		return identify(site, &hit, now)
+		return false, identify(site, &hit, now)
 	case "consent":
 		return consent(site, &hit, now)
 	}
-	return &collectError{400, "Unknown hit type"}
+	return false, &collectError{400, "Unknown hit type"}
 }
 
 // countryOf prefers a CDN's country header, then the GeoIP database. "XX"/"T1" (unknown/Tor) count as unknown.
@@ -160,22 +161,22 @@ func existingIdentity(site Site, hit *Hit) *identity {
 	return &identity{str(pv, "visitor_id"), str(pv, "session_id"), "hash"}
 }
 
-func pageview(site Site, hit *Hit, r *http.Request, ua string, now time.Time) *collectError {
+func pageview(site Site, hit *Hit, r *http.Request, ua string, now time.Time) (record bool, e *collectError) {
 	u, err := url.Parse(hit.U)
 	if err != nil || u.Hostname() == "" {
-		return &collectError{400, "Invalid url"}
+		return false, &collectError{400, "Invalid url"}
 	}
 	if hit.P == "" {
-		return &collectError{400, "Missing pageview id"}
+		return false, &collectError{400, "Missing pageview id"}
 	}
 	if !hostAllowed(site, u.Hostname()) {
-		return &collectError{403, "Domain not allowed for this site"}
+		return false, &collectError{403, "Domain not allowed for this site"}
 	}
 
 	id := pageviewIdentity(site, hit, r, now)
 	owner, _ := rowOf(db, "SELECT site_id FROM sessions WHERE id = ?", id.sessionID)
 	if owner != nil && i64(owner, "site_id") != site.ID {
-		return &collectError{409, "Session belongs to another site"}
+		return false, &collectError{409, "Session belongs to another site"}
 	}
 
 	path := truncate(u.EscapedPath(), 500)
@@ -251,15 +252,18 @@ func pageview(site Site, hit *Hit, r *http.Request, ua string, now time.Time) *c
 		if lv.Bot, err = rescore(tx, id.sessionID, ms); err != nil {
 			return err
 		}
+		if record, err = decideReplay(tx, site, id, lv.Bot); err != nil {
+			return err
+		}
 		_, err = tx.Exec(`INSERT OR IGNORE INTO pageviews (id, site_id, session_id, visitor_id, ts, path, title) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			hit.P, site.ID, id.sessionID, id.visitorID, ms, path, nullable(title))
 		return err
 	})
 	if err != nil {
-		return &collectError{500, err.Error()}
+		return false, &collectError{500, err.Error()}
 	}
 	live.touch(site.ID, lv)
-	return nil
+	return record, nil
 }
 
 func heartbeat(site Site, hit *Hit, now time.Time) *collectError {
@@ -347,6 +351,12 @@ func rescore(q querier, sessionID string, now int64) (bool, error) {
 	score := botScore(signals, i64(s, "interacted") == 1)
 	bot := score >= botThreshold
 	_, err = q.Exec("UPDATE sessions SET bot_signals = ?, bot_score = ?, bot = ? WHERE id = ?", signals, score, bot, sessionID)
+	if err == nil && bot {
+		// Likely bots are never kept in session replay.
+		if _, err = q.Exec("UPDATE sessions SET replay = 0 WHERE id = ? AND replay = 1", sessionID); err == nil {
+			_, err = q.Exec("DELETE FROM replay_chunks WHERE session_id = ?", sessionID)
+		}
+	}
 	return bot, err
 }
 
@@ -369,21 +379,37 @@ func identify(site Site, hit *Hit, now time.Time) *collectError {
 	return nil
 }
 
+// consentReplay decides replay for a session that now runs on the cookie, so recording can start after consent.
+func consentReplay(site Site, hit *Hit) (bool, *collectError) {
+	s, _ := rowOf(db, "SELECT bot FROM sessions WHERE id = ? AND site_id = ?", hit.S, site.ID)
+	if s == nil {
+		return false, nil
+	}
+	record, err := decideReplay(db, site, identity{hit.V, hit.S, "cookie"}, i64(s, "bot") == 1)
+	if err != nil {
+		return false, &collectError{500, err.Error()}
+	}
+	return record, nil
+}
+
 // consent: the visitor accepted cookies part-way through a cookieless session. Move that session over to the
 // new cookie ids so the visit isn't counted twice.
-func consent(site Site, hit *Hit, now time.Time) *collectError {
+func consent(site Site, hit *Hit, now time.Time) (record bool, e *collectError) {
 	if site.Privacy == "cookieless" {
-		return nil
+		return false, nil
 	}
 	if hit.V == "" || hit.S == "" || hit.P == "" {
-		return &collectError{400, "Missing ids"}
+		return false, &collectError{400, "Missing ids"}
 	}
 	pv, _ := rowOf(db, "SELECT session_id, visitor_id FROM pageviews WHERE id = ? AND site_id = ?", hit.P, site.ID)
-	if pv == nil || str(pv, "session_id") == hit.S {
-		return nil
+	if pv == nil {
+		return false, nil
+	}
+	if str(pv, "session_id") == hit.S {
+		return consentReplay(site, hit)
 	}
 	if taken, _ := rowOf(db, "SELECT 1 FROM sessions WHERE id = ?", hit.S); taken != nil {
-		return nil
+		return false, nil
 	}
 	oldSession, oldVisitor := str(pv, "session_id"), str(pv, "visitor_id")
 	ms := now.UnixMilli()
@@ -421,8 +447,8 @@ func consent(site Site, hit *Hit, now time.Time) *collectError {
 		return err
 	})
 	if err != nil {
-		return &collectError{500, err.Error()}
+		return false, &collectError{500, err.Error()}
 	}
 	live.rekey(site.ID, oldSession, hit.S, hit.V)
-	return nil
+	return consentReplay(site, hit)
 }

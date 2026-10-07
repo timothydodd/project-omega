@@ -102,6 +102,22 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_ts ON events(site_id, ts);
 CREATE INDEX IF NOT EXISTS events_session ON events(session_id, ts);
 
+-- Session replay: gzip-compressed NDJSON rrweb events, stored exactly as the recorder uploaded them.
+-- A recording is one page load (one tab); a session can have several.
+CREATE TABLE IF NOT EXISTS replay_chunks (
+  site_id      INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+  session_id   TEXT NOT NULL,
+  recording_id TEXT NOT NULL,
+  seq          INTEGER NOT NULL,
+  ts_first     INTEGER NOT NULL,
+  ts_last      INTEGER NOT NULL,
+  bytes        INTEGER NOT NULL,
+  data         BLOB NOT NULL,
+  PRIMARY KEY (recording_id, seq)
+);
+CREATE INDEX IF NOT EXISTS replay_session ON replay_chunks(session_id);
+CREATE INDEX IF NOT EXISTS replay_age ON replay_chunks(ts_last);
+
 -- App-wide settings (key/value), e.g. the public address used in tracking snippets.
 CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
@@ -140,6 +156,10 @@ func openDB(path string) error {
 		{"sessions", "bot", "INTEGER NOT NULL DEFAULT 0"},
 		{"sessions", "interacted", "INTEGER NOT NULL DEFAULT 0"},
 		{"sessions", "network", "TEXT"}, // network owner (ASN organisation), e.g. "Comcast Cable" or "Amazon.com"
+		// Session replay (see replay.go): per-site switch and sample rate, and whether a session is being recorded.
+		{"sites", "replay", "INTEGER NOT NULL DEFAULT 0"},
+		{"sites", "replay_sample", "INTEGER NOT NULL DEFAULT 100"},
+		{"sessions", "replay", "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		if err := addColumn(m[0], m[1], m[2]); err != nil {
 			return err

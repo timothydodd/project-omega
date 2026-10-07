@@ -67,11 +67,15 @@ func (d *ipDatabase) status() ipDatabaseStatus {
 
 func settingsResponse() map[string]any {
 	u, fromEnv := publicURL()
+	days, daysFromEnv := replayRetentionDays()
 	return map[string]any{
 		"publicUrl":        u,
 		"publicUrlFromEnv": fromEnv,
 		"countryLookup":    countryDB.status(),
 		"networkLookup":    networkDB.status(),
 		"autoUpdate":       !strings.EqualFold(os.Getenv("OMEGA_IP_DB_UPDATE"), "off"),
+		"replay": map[string]any{
+			"retentionDays": days, "retentionFromEnv": daysFromEnv, "bytes": replayBytes(), "maxBytes": replayMaxBytes(),
+		},
 	}
 }

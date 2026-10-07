@@ -316,7 +316,8 @@ func listSessions(sc siteScope, before int64, visitorID string, bots bool) ([]Ro
 	if visitorID != "" {
 		where, args = append(where, "s.visitor_id = ?"), append(args, visitorID)
 	}
-	rows, err := rowsOf(db, `SELECT s.*, v.user_id, v.traits FROM sessions s
+	rows, err := rowsOf(db, `SELECT s.*, v.user_id, v.traits,
+		EXISTS (SELECT 1 FROM replay_chunks r WHERE r.session_id = s.id) has_replay FROM sessions s
 		LEFT JOIN visitors v ON v.site_id = s.site_id AND v.id = s.visitor_id
 		WHERE `+strings.Join(where, " AND ")+` ORDER BY s.started_at DESC LIMIT 50`, args...)
 	for _, r := range rows {
@@ -400,7 +401,8 @@ func visitorDetail(sc siteScope, id string) (map[string]any, error) {
 		ids = append(ids, d["id"])
 	}
 	in := strings.TrimSuffix(strings.Repeat("?,", len(devices)), ",")
-	sessions, err := rowsOf(db, "SELECT * FROM sessions WHERE site_id = ? AND visitor_id IN ("+in+") ORDER BY started_at DESC LIMIT 200", ids...)
+	sessions, err := rowsOf(db, `SELECT s.*, EXISTS (SELECT 1 FROM replay_chunks r WHERE r.session_id = s.id) has_replay
+		FROM sessions s WHERE s.site_id = ? AND s.visitor_id IN (`+in+") ORDER BY s.started_at DESC LIMIT 200", ids...)
 	if err != nil {
 		return nil, err
 	}

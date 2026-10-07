@@ -24,22 +24,55 @@ type trackerAsset struct {
 	etag  string
 }
 
-const trackerBanner = "/*! Omega Analytics tracker: https://github.com/timothydodd/project-omega */\n"
+const (
+	trackerBanner = "/*! Omega Analytics tracker: https://github.com/timothydodd/project-omega */\n"
+	replayBanner  = "/*! Omega Analytics session replay: https://github.com/timothydodd/project-omega. Includes rrweb (MIT): https://github.com/rrweb-io/rrweb */\n"
+)
 
 func loadTracker() trackerAsset {
-	src, err := assets.ReadFile("tracker/t.js")
+	return newTrackerAsset(minifiedScript("tracker/t.js", trackerBanner, nil))
+}
+
+// loadReplayScript builds /replay.js: rrweb's recorder, then tracker/replay.js. rrweb's bundle runs with
+// define/exports/module hidden, so it can't register itself with a page's module loader or add globals.
+func loadReplayScript() trackerAsset {
+	vendor, err := assets.ReadFile("tracker/vendor/rrweb-record.min.js")
+	if err != nil {
+		log.Fatal(err)
+	}
+	return newTrackerAsset(minifiedScript("tracker/replay.js", replayBanner, func(glue []byte) []byte {
+		var b bytes.Buffer
+		b.WriteString("(function(){var o={};(function(define,exports,module){\n")
+		b.Write(vendor)
+		b.WriteString("\n}).call(o);var rrwebRecord=o.rrwebRecord;\n")
+		b.Write(glue)
+		b.WriteString("\n})();\n")
+		return b.Bytes()
+	}))
+}
+
+// minifiedScript reads an embedded script, minifies it when minifyTracker() says so, and lets wrap add to it.
+func minifiedScript(name, banner string, wrap func([]byte) []byte) []byte {
+	src, err := assets.ReadFile(name)
 	if err != nil {
 		log.Fatal(err)
 	}
 	body := src
 	if minifyTracker() {
 		if out, err := minifyJS(src); err != nil {
-			log.Printf("Tracker minify failed, serving the readable source: %v", err)
+			log.Printf("%s minify failed, serving the readable source: %v", name, err)
 		} else {
-			body = append([]byte(trackerBanner), out...)
-			log.Printf("Tracker minified: %d → %d bytes", len(src), len(body))
+			body = out
+			log.Printf("%s minified: %d → %d bytes", name, len(src), len(out))
 		}
 	}
+	if wrap != nil {
+		body = wrap(body)
+	}
+	return append([]byte(banner), body...)
+}
+
+func newTrackerAsset(body []byte) trackerAsset {
 	var gz bytes.Buffer
 	w, _ := gzip.NewWriterLevel(&gz, gzip.BestCompression)
 	w.Write(body)

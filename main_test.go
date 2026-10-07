@@ -148,11 +148,11 @@ func TestAllSitesOverview(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	a, err := createSite("A", "a.test", "cookies")
+	a, err := createSite(siteInput{Name: "A", Domains: "a.test", Privacy: "cookies"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := createSite("B", "b.test", "cookies")
+	b, err := createSite(siteInput{Name: "B", Domains: "b.test", Privacy: "cookies"})
 	if err != nil {
 		t.Fatal(err)
 	}

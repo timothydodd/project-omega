@@ -34,6 +34,15 @@
       <button onclick="history.pushState({}, '', '/demo/spa-' + Math.random().toString(36).slice(2, 6)); document.getElementById('title').textContent = location.pathname">Client-side route change</button>
     </div>
     <p>Links from here: <a href="/demo?utm_source=newsletter&utm_campaign=fall-sale">a campaign link</a>.</p>
+    <h2>Session replay check</h2>
+    <p>With session replay on for the site, type here and then watch the session back: the typed text should show as <code>***</code>.</p>
+    <form class="row" onsubmit="event.preventDefault(); omega.track('Demo form sent')">
+      <input name="email" type="email" placeholder="Email" autocomplete="off">
+      <input name="password" type="password" placeholder="Password" autocomplete="off">
+      <button>Send</button>
+    </form>
+    <p data-omega-mask>Account number 1234-5678 (this paragraph has data-omega-mask, so its text is hidden in recordings).</p>
+    <div data-omega-block style="padding:12px;border:1px dashed #bbb;border-radius:6px">This box has data-omega-block: recordings show an empty box instead.</div>
     <p id="status"></p>
   </main>
   <script>

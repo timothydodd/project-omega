@@ -21,6 +21,7 @@ function fmtDur(ms) {
 }
 const fmtDate = ts => new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 const fmtDateTime = ts => new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+const fmtBytes = n => (n >= 1 << 30 ? `${(n / (1 << 30)).toFixed(1)} GB` : n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : `${Math.ceil((n ?? 0) / 1024)} KB`);
 const fmtClock = ts => new Date(ts).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' });
 function ago(ts) {
   const s = (Date.now() - ts) / 1000;
@@ -513,7 +514,7 @@ function sessionRows(sessions, { showVisitor = true } = {}) {
       ${showVisitor && allSites() ? `<td>${esc(siteName(s.site_id))}</td>` : ''}
       <td>${esc(s.source)}${s.utm_campaign ? `<div class="sub">${esc(s.utm_campaign)}</div>` : ''}</td>
       <td><div class="path">${esc(s.entry_path)}</div>${s.pageviews > 1 ? `<div class="sub">then ${s.pageviews - 1} more ${s.pageviews === 2 ? 'page' : 'pages'}, left from ${esc(s.exit_path)}</div>` : '<div class="sub">Single page</div>'}</td>
-      <td class="num">${fmtDur(s.last_seen - s.started_at)}</td>
+      <td class="num">${fmtDur(s.last_seen - s.started_at)}${s.has_replay ? ' <span class="tag replay" title="Has a session recording">▶ Replay</span>' : ''}</td>
       <td>${esc(s.device)}<div class="sub">${esc(s.browser)}, ${esc(s.os)}</div></td>
       <td>${esc(countryName(s.country))}</td>
       <td class="num" title="${esc(new Date(s.started_at).toLocaleString())}">${ago(s.started_at)}</td>
@@ -552,7 +553,10 @@ async function sessionsView(main, r, alive) {
 
 async function sessionDetailView(main, id, alive) {
   main.innerHTML = `${pageHead('Session', '', '<a class="crumb" href="#/sessions">Sessions /</a>')}<div class="loading">Loading…</div>`;
-  const { session: s, pageviews, events } = await api(`/api/sessions/${encodeURIComponent(id)}?site=${state.siteId}`);
+  const [{ session: s, pageviews, events }, recordings] = await Promise.all([
+    api(`/api/sessions/${encodeURIComponent(id)}?site=${state.siteId}`),
+    api(`/api/sessions/${encodeURIComponent(id)}/replays?site=${state.siteId}`).catch(() => []),
+  ]);
   if (!alive()) return;
   const name = personName(s.traits, s.user_id, s.visitor_id);
   const steps = [
@@ -563,6 +567,7 @@ async function sessionDetailView(main, id, alive) {
 
   main.innerHTML = `
     ${pageHead(`${name}, ${fmtDateTime(s.started_at)}`, liveNow ? '<span class="chip"><span class="pulse" aria-hidden="true" style="width:8px;height:8px"></span>Live now</span>' : '', '<a class="crumb" href="#/sessions">Sessions /</a>')}
+    ${recordings.length ? '<section class="card replay-card" id="replay"></section>' : ''}
     <div class="split">
       <section class="card">
         <div class="card-head"><h2>Journey</h2><span class="spacer"></span><span class="muted">${pageviews.length} ${pageviews.length === 1 ? 'page' : 'pages'}, ${fmtDur(s.last_seen - s.started_at)}</span></div>
@@ -613,6 +618,68 @@ async function sessionDetailView(main, id, alive) {
       </section>
       </div>
     </div>`;
+  if (recordings.length) replayCard($('#replay'), s.id, recordings, alive);
+}
+
+// ----- Session replay -----
+let playerLoad = null;
+/** rrweb-player is only loaded when a recording is opened. */
+function loadPlayer() {
+  playerLoad ??= new Promise((resolve, reject) => {
+    const css = document.createElement('link');
+    css.rel = 'stylesheet';
+    css.href = '/assets/vendor/rrweb-player/style.min.css';
+    const js = document.createElement('script');
+    js.src = '/assets/vendor/rrweb-player/rrweb-player.min.js';
+    js.onload = () => resolve(window.rrwebPlayer.Player);
+    js.onerror = () => { playerLoad = null; reject(new Error("Couldn't load the replay player.")); };
+    document.head.append(css, js);
+  });
+  return playerLoad;
+}
+
+async function fetchRecording(sessionId, recordingId) {
+  const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/replays/${encodeURIComponent(recordingId)}?site=${state.siteId}`);
+  if (!res.ok) throw new Error(res.status === 404 ? 'This recording has been deleted.' : `Couldn't load the recording (${res.status}).`);
+  return (await res.text()).split('\n').filter(Boolean).map(line => JSON.parse(line));
+}
+
+/** The Replay card on a session: one recording per page load, played one after another. */
+function replayCard(card, sessionId, recordings, alive) {
+  let player = null;
+  const destroy = () => { player?.$destroy(); player = null; };
+  viewCleanups.push(destroy);
+  const show = async i => {
+    destroy();
+    const rec = recordings[i];
+    card.innerHTML = `
+      <div class="card-head"><h2>Replay</h2><span class="spacer"></span>
+        ${recordings.length > 1 ? `<div class="segmented" role="group" aria-label="Recording">${recordings.map((r, j) =>
+          `<button type="button" data-rec="${j}" aria-pressed="${j === i}" title="Page load ${j + 1}, ${fmtDur(r.ended_at - r.started_at)}">${fmtClock(r.started_at)}</button>`).join('')}</div>` : ''}
+        <span class="muted">${fmtDur(rec.ended_at - rec.started_at)}</span>
+      </div>
+      <div class="card-body">
+        <div class="replay-stage"><div class="loading">Loading recording…</div></div>
+        <p class="footnote">Anything typed into forms is hidden in recordings.${recordings.length > 1 ? ' Each page load is its own recording; they play one after another.' : ''}</p>
+      </div>`;
+    card.querySelectorAll('[data-rec]').forEach(b => b.addEventListener('click', () => show(Number(b.dataset.rec))));
+    const stage = card.querySelector('.replay-stage');
+    try {
+      const [Player, events] = await Promise.all([loadPlayer(), fetchRecording(sessionId, rec.id)]);
+      if (!alive()) return;
+      if (events.length < 2) { stage.innerHTML = '<div class="empty">This recording is too short to play.</div>'; return; }
+      const meta = events.find(e => e.type === 4)?.data; // rrweb Meta event: the recorded viewport
+      const width = stage.clientWidth;
+      const CONTROLLER = 80; // rrweb-player's height includes its controls
+      const height = Math.min(Math.round(width * (meta ? meta.height / meta.width : 9 / 16)), Math.round(innerHeight * 0.65)) + CONTROLLER;
+      stage.innerHTML = '';
+      player = new Player({ target: stage, props: { events, width, height, autoPlay: true, skipInactive: true, showController: true } });
+      player.addEventListener('finish', () => { if (i + 1 < recordings.length && alive()) show(i + 1); });
+    } catch (err) {
+      if (alive()) stage.innerHTML = `<div class="empty">${esc(err.message)}</div>`;
+    }
+  };
+  show(0);
 }
 
 // ----- Visitors -----
@@ -753,6 +820,18 @@ async function sitesView(main, r, alive) {
           </label>`).join('')}
         ${s ? '<span class="hint">If you change this, update the snippet on your site too.</span>' : ''}
       </fieldset>
+      <fieldset class="choices">
+        <legend>Session replay</legend>
+        <label class="choice">
+          <input type="checkbox" name="replay" ${s?.replay ? 'checked' : ''}>
+          <span><b>Record sessions</b><span class="hint">Watch visits back: scrolling, clicks and page changes. Anything typed into forms is hidden. Add <code>data-omega-mask</code> to an element to hide its text, or <code>data-omega-block</code> to leave it out. With cookies after consent, recording starts once the visitor accepts. Recordings are deleted after the period set in <a href="#/settings">Settings</a>.</span></span>
+        </label>
+        <div class="field">
+          <label for="sample-${s?.id ?? 'new'}">Share of sessions to record</label>
+          <div class="row"><input class="input" id="sample-${s?.id ?? 'new'}" name="replaySample" type="number" min="1" max="100" value="${s?.replaySample ?? 100}" style="width:90px" ${s?.replay ? '' : 'disabled'}><span>%</span></div>
+          <span class="hint">Lower this on busy sites to save storage. Likely bots are never recorded.</span>
+        </div>
+      </fieldset>
       <p class="error" hidden></p>
       <div class="row"><button class="btn primary" type="submit">${s ? 'Save changes' : 'Add site'}</button>${state.sites.length ? `<a class="btn" href="#/sites">Cancel</a>` : ''}</div>
     </form>`;
@@ -767,7 +846,7 @@ async function sitesView(main, r, alive) {
         <div class="stack" style="gap:10px;min-width:0">
           <div><h2 style="margin:0;font-size:16px">${esc(s.name)}</h2>
             <div class="soft">${s.domains.length ? s.domains.map(esc).join(', ') : 'Any domain'}</div>
-            <div style="margin-top:6px"><span class="tag" title="${esc(PRIVACY[s.privacy].help)}">${esc(PRIVACY[s.privacy].label)}</span></div></div>
+            <div class="row" style="margin-top:6px;gap:6px"><span class="tag" title="${esc(PRIVACY[s.privacy].help)}">${esc(PRIVACY[s.privacy].label)}</span>${s.replay ? `<span class="tag replay">Session replay${s.replaySample < 100 ? `, ${s.replaySample}% of sessions` : ''}</span>` : ''}</div></div>
           ${justCreated === s.id ? '<p style="margin:0">Paste this into the <code>&lt;head&gt;</code> of every page you want to track:</p>' : ''}
           <pre class="snippet">${esc(snippet(s))}</pre>
           <div class="row"><button type="button" class="btn small" data-copy="${s.id}">Copy snippet</button><span class="muted" data-copied="${s.id}" aria-live="polite"></span></div>
@@ -796,10 +875,14 @@ omega.identify(user.id, { name: user.name, email: user.email });
 localStorage.setItem('omega_ignore', '1');</pre>
     </section>` : ''}`;
 
+  main.querySelectorAll('form[data-form]').forEach(form => form.replay.addEventListener('change', () => { form.replaySample.disabled = !form.replay.checked; }));
   main.querySelectorAll('form[data-form]').forEach(form => form.addEventListener('submit', async e => {
     e.preventDefault();
     const err = form.querySelector('.error');
-    const body = { name: form.name.value, domains: form.domains.value, privacy: form.privacy.value };
+    const body = {
+      name: form.name.value, domains: form.domains.value, privacy: form.privacy.value,
+      replay: form.replay.checked, replaySample: Number(form.replaySample.value) || 100,
+    };
     try {
       const isNew = form.dataset.form === 'new';
       const s = await api(isNew ? '/api/sites' : `/api/sites/${form.dataset.form}`, { method: isNew ? 'POST' : 'PUT', body });
@@ -889,7 +972,40 @@ async function settingsView(main, r, alive) {
           <span class="soft" id="update-ip-status" aria-live="polite"></span>
         </div>
       </div>
+    </section>
+    <section class="card" style="margin-top:16px">
+      <div class="card-head"><h2>Session replay</h2></div>
+      <div class="card-body">
+        <form class="stack" id="replay-form">
+          <div class="field">
+            <label for="retention">Keep recordings for</label>
+            <div class="row"><input class="input" id="retention" type="number" min="1" max="365" value="${st.replay.retentionDays}" style="width:90px" ${st.replay.retentionFromEnv ? 'disabled' : ''}><span>days</span></div>
+            <span class="hint">${st.replay.retentionFromEnv
+              ? 'Set on the server with OMEGA_REPLAY_RETENTION_DAYS. Change it there.'
+              : 'Older recordings are deleted automatically. Analytics data is kept.'} Turn recording on per site in <a href="#/sites">Sites</a>.</span>
+          </div>
+          <p class="soft" style="margin:0">Recordings use ${fmtBytes(st.replay.bytes)} of ${fmtBytes(st.replay.maxBytes)}. If they reach the limit, the oldest are deleted first.</p>
+          <p class="error" hidden></p>
+          ${st.replay.retentionFromEnv ? '' : `<div class="row">
+            <button class="btn primary" type="submit">Save</button>
+            <span class="muted" id="replay-saved" aria-live="polite"></span>
+          </div>`}
+        </form>
+      </div>
     </section>`;
+
+  $('#replay-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const err = $('#replay-form .error');
+    err.hidden = true;
+    try {
+      state.settings = await api('/api/settings/replay', { method: 'PUT', body: { retentionDays: Number($('#retention').value) } });
+      $('#replay-saved').textContent = 'Saved';
+    } catch (ex) {
+      err.textContent = ex.message;
+      err.hidden = false;
+    }
+  });
 
   const updateBtn = $('#update-ip');
   updateBtn.addEventListener('click', async () => {
